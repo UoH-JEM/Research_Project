@@ -1,0 +1,229 @@
+---
+title: "CCLE_FINAL_20210202"
+output: html_notebook
+---
+
+### Install packages 
+
+```{r}
+
+#install.packages("plyr")
+
+```
+
+
+### Load packages
+
+```{r}
+
+library(plyr)
+library(tidyverse)
+library(here)
+library(janitor)
+library(BiocManager)
+library(biomaRt)
+library(AnnotationDbi)
+library(org.Hs.eg.db)
+
+```
+
+```{r}
+
+here::here()
+
+```
+
+### Load data
+
+```{r}
+
+CCLE <- read_tsv(here::here("Data/CCLE_RNAseq_rsem_genes_tpm.txt"))
+
+```
+
+### Retrieve all human kinase Ensembl IDs
+
+# Import dataset
+
+```{r}
+
+kinases <- read_csv(here::here("Output/kinases_update.csv"))
+
+```
+
+```{r}
+
+kinases <- kinases %>% 
+  dplyr::select(-X1)
+
+```
+
+```{r}
+
+head(kinases)
+
+```
+
+# Tidy CCLE gene_id column
+
+```{r}
+
+CCLE <- CCLE %>% 
+  mutate(gene_id_tidy = str_replace_all(gene_id, "[.][0-9]+", ""))
+
+```
+
+# Move tidy gene_id column to front of dataset
+
+```{r}
+
+CCLE <- CCLE %>% 
+  dplyr::select(gene_id_tidy, everything())
+
+```
+
+```{r}
+
+head(CCLE)
+
+```
+
+# Rename columns to match kinase_Ensembl
+
+```{r}
+
+CCLE <- CCLE %>% 
+  dplyr::rename(gene_id = gene_id_tidy, gene_id_full = gene_id)
+
+```
+
+### Filter kinases in CCLE data
+
+# Select Ensembl IDs and HGNC Names from kinase data set
+
+```{r}
+
+kinase_hgnc <- kinases %>% 
+  dplyr::select(HGNC_Name, Ensembl_Gene_ID) %>% 
+  dplyr::rename(gene_id = Ensembl_Gene_ID, hgnc_name = HGNC_Name) %>% 
+  distinct(hgnc_name, gene_id)
+
+```
+
+```{r}
+
+head(kinase_hgnc )
+
+```
+
+# Count number of kinases 
+
+```{r}
+
+kinase_hgnc %>% 
+  distinct(hgnc_name) #619
+
+```
+
+# Identify duplicates
+
+```{r}
+
+kinase_dupes <- kinase_hgnc %>% 
+	get_dupes(gene_id) %>% 
+	distinct(hgnc_name, gene_id) 
+
+```
+
+# Join HGNC Names to CCLE data by Ensembl ID
+
+```{r}
+
+CCLE_hgnc <- right_join(kinase_hgnc, CCLE, by = "gene_id")
+
+```
+
+```{r}
+
+head(CCLE_hgnc)
+
+```
+
+# Remove non-kinases (no HGNC name) from dataset
+
+```{r}
+
+CCLE_kinases <- CCLE_hgnc %>% 
+  filter(!is.na(hgnc_name))
+
+```
+
+```{r}
+
+head(CCLE_kinases)
+
+```
+
+```{r}
+
+CCLE_kinases %>% 
+  distinct(hgnc_name) #616
+
+```
+Three kinases appear to have been lost during the join so I will need to check this.
+
+# List of unique kinase names from kinase_hgnc
+
+```{r}
+
+kin_hgnc_distinct <- kinase_hgnc %>% 
+  distinct(hgnc_name) #619
+
+```
+
+```{r}
+
+kin_ccle_distinct <- CCLE_kinases %>% 
+  distinct(hgnc_name) #616
+
+```
+
+```{r}
+
+kin_hgnc_distinct %>% 
+  filter(!hgnc_name %in% kin_ccle_distinct$hgnc_name)
+
+```
+
+Three kinases are missing from the dataset (PRAG1, DGKK, IKBKE). I will now need to manually check to identify why these kinases are missing.
+
+# Write .csv file 
+
+```{r}
+
+#write.csv(CCLE_kinases, here::here("Output/CCLE_kinases_v2.csv"))
+
+```
+
+
+### Check final kinases and check for any that are missing 
+
+# Count number of kinases 
+
+```{r}
+
+CCLE_kinases %>% 
+  distinct(hgnc_name) #616
+
+```
+
+
+
+
+
+
+
+
+
+
+

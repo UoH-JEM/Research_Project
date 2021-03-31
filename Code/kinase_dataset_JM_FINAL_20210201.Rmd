@@ -1,0 +1,3011 @@
+---
+title: "kinase_dataset_JM_FINAL_20210201"
+output: html_notebook
+---
+
+This is a fourth iteration of the analysis. Unfortunately due to inconsistencies in data provided by third party, some degree of manual curation of the dataset was required and not all the steps reported here are programmatically reproducible.
+
+### Install packages
+
+```{r}
+
+#if (!requireNamespace("BiocManager", quietly = TRUE))
+ #   install.packages("BiocManager")
+
+#BiocManager::install("biomaRt")
+
+```
+
+```{r}
+
+#if (!requireNamespace("BiocManager", quietly = TRUE))
+ #   install.packages("BiocManager")
+
+#BiocManager::install("org.Hs.eg.db")
+
+```
+
+```{r}
+
+#install.packages("tidyverse")
+#install.packages("wrapr")
+#install.packages("rqdatatable")
+#install.packages("naniar")
+
+```
+
+### Load packages and functions
+
+```{r}
+
+library("tidyverse")
+library("janitor")
+library("magrittr")
+library("broom")
+library("readxl")
+library("here")
+library("gghighlight")
+library("biomaRt")
+library("cowplot")
+library("glue")
+library("wrapr")
+library("AnnotationDbi")
+library("org.Hs.eg.db")
+library("rqdatatable")
+library("naniar")
+
+```
+
+### Set up BiomaRt (humans dataset only) [JB]
+
+```{r}
+
+ensembl = useMart("ensembl")
+ensembl = useMart("ensembl", dataset = "hsapiens_gene_ensembl")
+filters = listFilters(ensembl)
+attributes = listAttributes(ensembl)
+
+```
+
+### Define custom functions and themes [JB]
+
+```{r}
+
+give.n <- function(x){
+   return(c(y = max(x), label = length(x)))
+} # SOURCE https://stackoverflow.com/questions/3483203/create-a-boxplot-in-r-that-labels-a-box-with-the-sample-size-n#3483657
+
+give.median <- function(x){
+   return(c(y = median(x), label = round(median(x, na.rm = TRUE), digits = 0)))
+} # SOURCE https://stackoverflow.com/questions/3483203/create-a-boxplot-in-r-that-labels-a-box-with-the-sample-size-n#3483657
+
+```
+
+# Make a custom ggplot theme [JB]
+
+```{r}
+
+# Note: use of custom fonts requires library(Cairo) to be able to print the plots
+theme_jb_fancy <- 
+	function () { 
+    theme_bw(base_size=12, base_family="SkolarSansLatn-Rg") %+replace% 
+        theme(
+        		plot.background = element_rect(fill="white", colour="grey95", size = 0.1),
+            panel.background  = element_blank(),
+            panel.border = element_blank(),
+            axis.line = element_line(colour = "grey5", size = 0.1),
+            axis.ticks = element_line(colour = "grey5", size = 0.1),
+        		axis.title.x = element_text(margin = margin(t = 10)),
+            panel.grid.major = element_line(colour = "grey90", size = 0.1), 
+  					panel.grid.minor = element_line(colour = "grey95", size = 0.1), 
+    				strip.background = element_rect(fill = "grey95", colour = "grey50", size = 0.1),
+            legend.background = element_rect(fill="white", colour=NA),
+            legend.key = element_rect(fill="white", colour=NA),
+  					plot.caption=element_text(color="grey90", hjust = 1, size = 8)
+        )
+	}
+
+theme_jb_default <- 
+	function () {
+	theme_minimal() %+replace%
+	theme(panel.grid.major.x = element_blank(),
+				plot.title = element_text(size=16, hjust = 0),
+				plot.subtitle = element_text(margin = margin(10, 0, 0, 0, unit = "pt"), hjust = 0),
+				plot.caption=element_text(color="grey50", hjust=1, size=8),
+				axis.text = element_text(size=14),
+				axis.title = element_text(size=14),
+				strip.text.x = element_text(size=14),
+				legend.title = element_blank(),
+				legend.text = element_text(size=12))
+	}
+
+grid_theme_jb <- gridExtra::ttheme_default(
+    core = list(fg_params=list(cex = 0.75)),
+    colhead = list(fg_params=list(cex = 0.75)),
+    rowhead = list(fg_params=list(cex = 0.75)))
+
+```
+
+
+
+### Load data 
+
+There are five data components in the project:
+
+1. Kinase panel that includes external identifiers for the kinase names used in the Premier Screen: [http://www.kinase-screen.mrc.ac.uk/services/premier-screen](http://www.kinase-screen.mrc.ac.uk/services/premier-screen) [JB]
+
+```{r}
+
+kinases_full_panel <- read_csv(here::here("Data/kinase_panel_data.csv"), locale = locale(encoding = "UTF-8")) %>% 
+  clean_names()
+
+```
+
+2. A list of all human kinases, downloaded from the KinHub project (KinMap)  [http://www.kinhub.org/kinases.html](http://www.kinhub.org/kinases.html) [JB]
+
+```{r}
+
+all_human_kinases <- read_csv(here::here("Data/KinMap_data.csv"), locale = locale(encoding = "UTF-8")) %>%
+  clean_names()
+
+```
+
+3. Results from the kinase inhibition panel obtained from Roger Phillips (and he received from the MRC), but which do not contain external identifiers for the kinase names [JB]
+
+```{r}
+
+kinases_panel_inhibition_results <- read_csv(here::here("Data/inhibition_data.csv"), locale = locale(encoding = "UTF-8")) %>% 
+  dplyr::select(starts_with("kinase"), perc_inhibition, compound)
+
+# kinases_panel_inhibition_results <- read_tsv(here("data/raw/inhibition_data.txt"), locale = locale(encoding = "UTF-8")) 
+
+```
+
+4. IC50 results for the kinase panel inhibition (Craig Rice) [JB]
+
+```{r}
+
+ic50_results <- read_csv(here::here("Data/IC50_data.csv"), locale = locale(encoding = "UTF-8"))
+
+```
+
+5. Human kinome lists (four in total) obtained from literature search (references saved in Zotero collection 'Kinase Lists')
+
+1. Kim et al
+
+```{r}
+
+kinases_kim <- read_csv(here::here("Data/kim_data.csv"), locale = locale(encoding = "UTF-8"), skip = 2) %>% 
+  clean_names()
+
+```
+
+2. Lun et al
+
+```{r}
+
+kinases_lun <- read_csv(here::here("Data/lun_data.csv"), locale = locale(encoding = "UTF-8")) %>% 
+  clean_names()
+
+```
+
+3. Modi and Dunbrak
+
+```{r}
+
+kinases_modidun <- read_csv(here::here("Data/modi_data.csv"), locale = locale(encoding = "UTF-8")) %>% 
+  clean_names()
+
+```
+
+4. Schmidlin et al
+
+```{r}
+
+kinases_schmidlin <- read_csv(here::here("Data/schmidlin_data.csv"), locale = locale(encoding = "UTF-8")) %>% 
+  clean_names()
+
+```
+
+---------------------------------------------------
+
+### Tidy up the kinases' IDs [JB]
+
+This is a mess. Most of this file is only about extracting the kinase names from the website panel information and then mapping it to known official IDs. It is a mess because the panel doens't use consistent IDs itself and appears out of date, with some IDs not (no longer?) present in the databases. Comparisons with external kinase-dedicated sites doesn't help either...
+
+```{r}
+
+# Separating multiple Accession numbers into individual rows and extracting Accession IDs without the dot and get rid of stuff in brackets
+
+kinases_full_tidy <- 
+	kinases_full_panel %>% 
+	separate_rows(accession, sep = ", ") %>% 
+	separate_rows(accession, sep = " and ") %>% 
+	mutate(accession_tidy = map_chr(accession, function(x) strsplit(x, split = "[.]")[[1]][[1]])) %>% 
+	mutate(accession_tidy = map_chr(accession_tidy, function(x) gsub(" [\\[\\(].+", "", x)))
+
+kinases_full_tidy
+
+```
+
+```{r}
+
+# Splitting the columns to ony have one kinase name per row
+
+# Note that this will result in some kinase names from the panel being associated with multiple accession IDs (for every case where the original panel mentioned multiple kinases per line; see for example AMPKA1)
+
+kinases_full_tidy_panel <- kinases_full_tidy %>% 
+	separate(col = "kinase", into = c("kinase1", "kinase2", "kinase3"), sep = "[\\+\\/\\,]", extra = "merge") %>% 
+	pivot_longer(cols = starts_with("kinase"), names_to = "kinases_tidy", values_to = "kinase_name") %>% 
+	mutate(kinase_name_only = kinase_name) %>% 
+	separate(col = "kinase_name_only", into = "kinase_name_only", sep = "\\[") %>% 
+	mutate_if(is.character, str_trim) %>% 
+	drop_na(kinase_name) %>% 
+	dplyr::select(-atp_group, -kinases_tidy) %>% 
+	dplyr::select(kinase_name, kinase_name_only, accession, accession_tidy, species, full_name) %>% 
+	dplyr::rename("kinase_name_panel" = "kinase_name",
+				 "kinase_name_only_panel" = "kinase_name_only",
+				 "accession_no_panel" = "accession",
+				 "accession_no_tidy_panel" = "accession_tidy",
+				 "kinase_description_panel" = "full_name")
+
+kinases_full_tidy_panel %>% 
+	distinct(accession_no_tidy_panel) # 144
+
+# Check how many different categories of IDs are there - extracting the first two letters of each and counting
+
+kinases_full_tidy_panel %>% 
+	mutate(test = str_extract(accession_no_tidy_panel, "^..")) %>% 
+	dplyr::count(test, sort = TRUE)
+
+# write_tsv(kinases_full_tidy_panel, path = here::here("Output/kinases_full_tidy_panel.txt"))
+
+```
+
+### Convert IDs with BiomaRt [JB]
+
+I will now use the accession ID of the kinases to extract current gene IDs. This is tricky because not all the accession ID are in the same format (RNA and protein from different databases?). I will use multiple forms of query IDs (refseq mRNA, refseq peptide, uniprot and embl) for each kinase accession ID to get Ensemble gene IDs back. I am querying 4 attributes at a time due to limitation of BiomaRt.
+
+```{r}
+
+# Assuming accesion IDs are refseq_mrna IDs
+converted_ids_refseq_mrna <- getBM(attributes=c('ensembl_gene_id', 'refseq_mrna'),
+      filters = 'refseq_mrna', 
+      values = unique(kinases_full_tidy_panel$accession_no_tidy_panel), 
+      mart = ensembl)
+
+# Assuming accesion IDs are refseq_peptide IDs
+converted_ids_refseq_peptide <- getBM(attributes=c('ensembl_gene_id', 'refseq_peptide'), 
+      filters = 'refseq_peptide', 
+      values = unique(kinases_full_tidy_panel$accession_no_tidy_panel), 
+      mart = ensembl)
+
+# Assuming accesion IDs are uniprot IDs
+converted_ids_uniprot <- getBM(attributes=c('ensembl_gene_id', 'uniprot_gn_id'), 
+      filters = 'uniprot_gn_id', 
+      values = unique(kinases_full_tidy_panel$accession_no_tidy_panel), 
+      mart = ensembl)
+
+# Assuming accesion IDs are EMBL IDs
+converted_ids_embl <- getBM(attributes=c('ensembl_gene_id', 'embl'), 
+      filters = 'embl', 
+      values = unique(kinases_full_tidy_panel$accession_no_tidy_panel), 
+      mart = ensembl)
+
+# Get all the converted IDs together 
+converted_ids_full <- bind_rows(converted_ids_refseq_mrna, converted_ids_refseq_peptide, converted_ids_uniprot, converted_ids_embl) %>% 
+	pivot_longer(-ensembl_gene_id, values_to = "sequence_id", names_to = "accession_no_type") %>% 
+	drop_na(sequence_id)
+
+# Combine the converted IDs with the original IDs from the panel
+converted_ids_full_with_panel <- full_join(kinases_full_tidy_panel, converted_ids_full, by = c("accession_no_tidy_panel" = "sequence_id")) %>% drop_na(ensembl_gene_id) %>% # 159 rows
+	dplyr::select(kinase_name_panel, kinase_name_only_panel, accession_no_panel, accession_no_tidy_panel, accession_no_type, species, ensembl_gene_id, kinase_description_panel) %>% 
+	distinct() # still 159 rows
+
+# Which kinases from the original panel are unmapped?
+unmapped_kinases_panel <- kinases_full_tidy_panel[kinases_full_tidy_panel$kinase_name_panel %in% setdiff(kinases_full_tidy_panel$kinase_name_panel, converted_ids_full_with_panel$kinase_name_panel),]
+
+#save(converted_ids_full_with_panel, file = here::here("output/converted_ids_full_with_panel.Rdata"))
+#load(here::here("output/converted_ids_full_with_panel.Rdata"))
+#write_tsv(unmapped_kinases_panel, path = here::here("output/kinases_unmapped.txt"))
+
+```
+
+### Manually check unmapped records [JB]
+
+I have manually annotated the 15 uncoverted kinase accession IDs and I am adding them to the others. 14 of the 15 IDs have Ensembl Gene IDs and 4 of the 15 are not annotated as human (two mouse, one rat, one _Tribolium_).
+
+```{r}
+
+# Loading the manually annotated unconverted kinase accession IDs
+
+# First preparing a smaller version of the original kinase panel to supply the original panel names to the new converted dataset
+kinases_full_tidy_panel_short <- kinases_full_tidy_panel %>% 
+	dplyr::select(kinase_name_panel, kinase_name_only_panel, accession_no_panel)
+
+# Adding the original kinase panel names to the manually curated records
+kinases_unmapped_mapped <- read_tsv(file = here::here("Data/kinases_unmapped_mapped.txt")) %>% 
+	dplyr::select(-hgnc_id, -refseq_mrna) %>% 
+	left_join(., kinases_full_tidy_panel_short, by = "kinase_name_panel") %>% 
+	dplyr::select(kinase_name_panel, kinase_name_only_panel, accession_no_panel, accession_no_tidy_panel, accession_no_type, species, ensembl_gene_id, kinase_description_panel, comments)
+
+kinases_unmapped_mapped
+
+```
+
+```{r}
+
+# Adding the manually converted IDs to the rest and the comments from the manual annotation
+converted_ids_full_with_panel_manual <- bind_rows(converted_ids_full_with_panel, kinases_unmapped_mapped)
+
+# Adding the remaining IDs to the manually annotated Ensembl gene IDs. I am splitting the getBM function into two queries due to limit on attributes number
+converted_ids_hgnc_annotation <- getBM(attributes=c('ensembl_gene_id', 'hgnc_symbol', 'description'), 
+			filters = 'ensembl_gene_id',
+      values = converted_ids_full_with_panel_manual$ensembl_gene_id, 
+      mart = ensembl)
+
+# Adding HUGO gene symbols with descriptoin to the data using Ensembl ID as a guide
+converted_ids_full_final <- full_join(converted_ids_full_with_panel_manual, converted_ids_hgnc_annotation, by = "ensembl_gene_id") %>% 
+	dplyr::select(kinase_name_panel:accession_no_tidy_panel, ensembl_gene_id, hgnc_symbol, everything()) %>% 
+	arrange(kinase_name_panel)
+
+converted_ids_full_final
+
+```
+
+### Check for duplicates [JB]
+
+Now, as I have the fully annotated object with Ensembl gene ID as my primary identifier, I will check for duplicate entries - where one kinase seem to be annotated with two different IDs.
+
+```{r}
+
+# This is a list of original kinase panel accession IDs that have more than one Ensembl gene ID mapped to them
+accession_no_tidy_panel_dupes <- converted_ids_full_final %>% 
+	get_dupes(accession_no_tidy_panel) %>% 
+	distinct(accession_no_tidy_panel, ensembl_gene_id) %>%
+	get_dupes(accession_no_tidy_panel) %>% 
+	distinct(accession_no_tidy_panel) %>% 
+	pull(accession_no_tidy_panel)
+
+```
+
+### Manual check of duplicates [JB]
+
+I will need to manually check each one.
+
+```{r}
+
+converted_ids_full_final %>% 
+	filter(accession_no_tidy_panel %in% accession_no_tidy_panel_dupes)
+
+```
+
+```{r}
+
+# All these IDs are "Human alternative sequence gene"
+ensembl_gene_ids_to_go <- c("ENSG00000261893", "ENSG00000274205", "ENSG00000281877", "ENSG00000288516", "ENSG00000281877")
+
+converted_ids_full_final_clean <- converted_ids_full_final %>% 
+	filter(!(ensembl_gene_id %in% ensembl_gene_ids_to_go))
+
+converted_ids_full_final_clean %>% 
+	distinct(ensembl_gene_id) # 144
+
+ save(converted_ids_full_final_clean, file = here::here("Output/converted_ids_full_final_clean.Rdata"))
+ write_tsv(converted_ids_full_final_clean, path = here::here("Output/converted_ids_full_final_clean.txt"))
+ load(here::here("Output/converted_ids_full_final_clean.Rdata"))
+
+converted_ids_full_final_clean
+
+```
+
+At this point I had to manually modify this object to resolve situation with AMPK, CDK2/9 and other entried where there were multiple kinase names with a single identifier or multiple identifiers. In addition, the dataset on kinase inhibition only contained kinase names, but not all of these names matched exactly the kinase names from the panel that I downloaded from the website. This required additional manual curation and confirmation from the MRC. The object I load next is that official, curated dataset with matching IDs between the kinase names from the online panel and from the inhibition data. **It contains curated and confirmed mapping between kinase names from the website, the inhibition report and the external identifiers.** [JB]
+
+```{r}
+
+# The ultimate curated dataset
+#converted_ids_full_final_clean_curated <- read_tsv(here::here("Data/converted_ids_full_final_clean_2020-02-18.tsv"))
+
+```
+
+---------------------------------------------------
+
+[JM]
+
+### Tidy kinase list tables
+
+Some of the lists contain unnecessary information or are messy. Tidying each list into as consistent a format as possible will make tidying the kinase IDs easier later on, as code should be fairly consistent between each table, with minor changes required to get the necessary information.
+For each dataset the following steps will be performed: 
+    1. Removing unnecessary columns, 
+    2. Reordering and renaming columns into a consistent format, 
+    3. Checking for and removing duplicates (if necessary).
+If further processing is necessary for a particular dataset, this will be described, as required. 
+
+# 1. Kim et al
+
+```{r}
+
+kinases_kim_tidy <- kinases_kim %>% 
+  dplyr::select(gene_symbol, gene_id, gene_description) %>%
+  dplyr::rename(gene_name = gene_symbol, entrezgene_id = gene_id, gene_desc = gene_description)
+
+sum(duplicated(kinases_kim_tidy))
+
+```
+
+# 2. Lun et al
+
+```{r}
+
+kinases_lun_tidy <- kinases_lun %>% 
+  dplyr::select(gene, gene_id, entry_name, entry, protein_names) %>% 
+  dplyr::rename(gene_name = gene, entrezgene_id = gene_id, uniprot_name = entry_name, uniprot_gn_id = entry, gene_desc = protein_names)
+
+sum(duplicated(kinases_lun_tidy))
+
+```
+
+```{r}
+
+kinases_lun_tidy <- unique(kinases_lun_tidy)
+
+sum(duplicated(kinases_lun_tidy))
+
+```
+
+# 3. Modi and Dunbrak
+
+```{r}
+
+kinases_modidun_tidy <- kinases_modidun %>% 
+  dplyr::select(c(x2_gene, x4_uni_entry, x5_uni_acc, x3_hgnc)) %>% 
+  dplyr::rename(gene_name = x2_gene, uniprot_name = x4_uni_entry, uniprot_gn_id = x5_uni_acc, hgnc_id = x3_hgnc)
+
+sum(duplicated(kinases_modidun_tidy))
+
+```
+
+# 4. Schmidlin et al
+
+This dataset is particularly difficult to work with as some columns contain several distinct pieces of information (some of which are not required) and unnecessary characters. The unnecessary characters and information must be removed before splitting the dataset into distinct columns to make it usable. 
+
+# Remove unnecessary data within columns 
+
+```{r}
+
+kinases_schmidlin_tidy <- kinases_schmidlin %>% 
+  dplyr::select(-modified_peptide_sequence) %>% 
+  mutate(common_kinase_name_and_phosphosite_localization = str_replace_all(common_kinase_name_and_phosphosite_localization, "\\([A-Z]+[0-9]+\\)", "")) %>% 
+  mutate(common_kinase_name = str_replace_all(common_kinase_name_and_phosphosite_localization, "\\([A-Z]+[0-9]+\\/[A-Z]+[0-9]+\\)", "")) %>% 
+  dplyr::select(common_kinase_name, uniprot_id_and_name)
+
+```
+
+# Separate kinases into unique rows
+
+```{r}
+
+kinases_schmidlin_tidy <- kinases_schmidlin_tidy %>% 
+  separate_rows(common_kinase_name, sep = " , ") %>% 
+  separate_rows(common_kinase_name, sep = ", ") %>% 
+  separate_rows(uniprot_id_and_name, sep = ", ") %>% 
+  mutate(common_kinase_name = str_replace(common_kinase_name, "\\([0-9]+\\)", ""))
+
+```
+
+# Trim white space and remove duplicates
+
+```{r}
+
+kinases_schmidlin_tidy <- kinases_schmidlin_tidy %>% 
+  mutate(common_kinase_name = str_trim(common_kinase_name)) %>% 
+  mutate(uniprot_id_and_name = str_trim(uniprot_id_and_name)) %>% 
+  distinct() %>% 
+  mutate(common_kinase_name = str_replace(common_kinase_name, "\\[", "")) %>% 
+  mutate(common_kinase_name = str_replace(common_kinase_name, " \\]", "")) %>% 
+  mutate(common_kinase_name = str_replace(common_kinase_name, "\\{", "")) %>% 
+  mutate(common_kinase_name = str_replace(common_kinase_name, " \\}", "")) %>% 
+  mutate(uniprot_id_and_name = str_replace(uniprot_id_and_name, "sp\\|", "")) %>% 
+  separate(uniprot_id_and_name, into = c("uniprot_id", "uniprot_name"), sep = "\\|") %>% 
+  distinct()
+
+```
+
+# Order and rename column names then check for and remove duplicates 
+
+```{r}
+
+kinases_schmidlin_tidy <- kinases_schmidlin_tidy %>%
+  dplyr::select(common_kinase_name, uniprot_name, uniprot_id) %>% 
+  dplyr::rename(kinase_name = common_kinase_name, uniprot_gn_id = uniprot_id)
+  
+```
+
+```{r}
+
+sum(duplicated(kinases_schmidlin_tidy))
+
+```
+
+Now that each dataset is tidy, I will translate the current IDs to Ensembl IDs, using BiomaRt.
+
+```{r}
+
+listFilters(ensembl)
+
+```
+
+```{r}
+
+listAttributes(ensembl)
+
+```
+
+### Translate current IDs to Ensembl IDs with biomaRt 
+
+# 1. Kim et al
+
+# Use glimpse() to identify gene ID for translation
+
+```{r}
+
+glimpse(kinases_kim_tidy)
+
+```
+
+### Translate Entrez Gene IDs
+
+```{r}
+
+ensembl_ids_kim_entrez <- getBM(attributes = c('ensembl_gene_id', 'entrezgene_id'),
+      filters = 'entrezgene_id', 
+      values = unique(kinases_kim_tidy$entrezgene_id), 
+      mart = ensembl)
+
+```
+
+# Join Ensembl IDs to original dataset
+
+```{r}
+
+ensembl_kim_entrez <- full_join(kinases_kim_tidy, ensembl_ids_kim_entrez)
+
+```
+
+# Check for and remove NAs and duplicates, if any
+
+```{r}
+
+sum(is.na(ensembl_kim_entrez$ensembl_gene_id))
+
+```
+
+```{r}
+
+ensembl_kim_entrez$entrezgene_id <- as.character(ensembl_kim_entrez$entrezgene_id)
+
+```
+
+```{r}
+
+ensembl_kim_entrez <- ensembl_kim_entrez %>% 
+  drop_na(ensembl_gene_id)
+
+```
+
+```{r}
+
+sum(duplicated(ensembl_kim_entrez))
+
+```
+
+### Check for duplicates 
+
+Now that I have a complete dataset with all possible identifiers for each gene, I will check for duplicate entries (as per JB code above) - where one kinase has been annotated with two different IDs.
+
+```{r}
+
+kim_dupes <- ensembl_kim_entrez %>% 
+	get_dupes(entrezgene_id) %>% 
+	distinct(entrezgene_id, ensembl_gene_id) %>%
+	get_dupes(entrezgene_id) %>% 
+	distinct(entrezgene_id) %>% 
+  pull(entrezgene_id)
+
+```
+	
+# Manual check of duplicates
+
+I will need to manually check each one.
+
+```{r}
+
+ensembl_kim_entrez_dupes <- ensembl_kim_entrez %>% 
+	filter(entrezgene_id %in% kim_dupes) %>% 
+  distinct(ensembl_gene_id) %>% 
+  pull(ensembl_gene_id)
+
+```
+
+# Write CSV file for manual check in Excel
+
+```{r}
+
+write.csv(ensembl_kim_entrez_dupes, here::here("Output/ensembl_kim_entrez_dupes.csv"))
+
+```
+
+# Import manually checked IDs
+
+```{r}
+
+ensembl_kim_entrez_to_go <- read.table(here::here("Output/ensembl_kim_entrez_alt.csv"))
+
+```
+
+# Remove 'Alternative Sequence' IDs
+
+```{r}
+
+ensembl_kim_entrez_final <- ensembl_kim_entrez %>% 
+  filter(!ensembl_gene_id %in% ensembl_kim_entrez_to_go$V1)
+
+ensembl_kim_entrez_final %>% 
+  distinct(ensembl_gene_id) #577
+
+```
+
+
+
+# 2. Lun et al
+
+# Use glimpse() to identify gene ID for translation 
+
+```{r}
+
+glimpse(kinases_lun_tidy)
+
+```
+
+### Translate Entrez Gene IDs
+
+```{r}
+
+ensembl_ids_lun_entrez <- getBM(attributes = c('ensembl_gene_id', 'entrezgene_id'),
+      filters = 'entrezgene_id', 
+      values = unique(kinases_lun_tidy$entrezgene_id), 
+      mart = ensembl)
+
+```
+
+# Join Ensembl IDs to original dataset
+
+```{r}
+
+ensembl_lun_entrez <- full_join(kinases_lun_tidy, ensembl_ids_lun_entrez)
+
+```
+
+# Check for and remove NAs and duplicates, if any
+
+```{r}
+
+sum(is.na(ensembl_lun_entrez$ensembl_gene_id))
+
+```
+
+```{r}
+
+ensembl_lun_entrez$entrezgene_id <- as.character(ensembl_lun_entrez$entrezgene_id)
+
+```
+
+```{r}
+
+ensembl_lun_entrez <- ensembl_lun_entrez %>% 
+  drop_na(ensembl_gene_id)
+
+```
+
+```{r}
+
+sum(duplicated(ensembl_lun_entrez))
+
+```
+
+### Check for duplicates 
+
+```{r}
+
+lun_entrez_dupes <- ensembl_lun_entrez %>% 
+	get_dupes(entrezgene_id) %>% 
+	distinct(entrezgene_id, ensembl_gene_id) %>%
+	get_dupes(entrezgene_id) %>% 
+	distinct(entrezgene_id) %>% 
+  pull(entrezgene_id)
+
+```
+	
+# Manual check of duplicates
+
+I will need to manually check each one.
+
+```{r}
+
+ensembl_lun_entrez_dupes <- ensembl_lun_entrez %>% 
+	filter(entrezgene_id %in% lun_entrez_dupes) %>% 
+  distinct(ensembl_gene_id) %>% 
+  pull(ensembl_gene_id)
+
+```
+
+```{r}
+
+ensembl_lun_entrez_dupes <- as.data.frame(ensembl_lun_entrez_dupes)
+
+```
+
+# Filter out any IDs already manually checked from Kim et al dataset
+
+```{r}
+
+ensembl_lun_entrez_dupes <- ensembl_lun_entrez_dupes %>% 
+  filter(!ensembl_lun_entrez_dupes %in% ensembl_kim_entrez_to_go$V1)
+
+```
+
+# Write CSV file for manual check from Excel
+
+```{r}
+
+write.csv(ensembl_lun_entrez_dupes, here::here("Output/ensembl_lun_entrez_dupes.csv"))
+
+```
+
+# Import manually checked IDs to be removed
+
+```{r}
+
+ensembl_lun_entrez_to_go <- read.table(here::here("Output/ensembl_lun_entrez_alt.csv"))
+
+```
+
+# Filter out 'Alternative Sequence' IDs
+
+```{r}
+
+ensembl_lun_entrez_final <- ensembl_lun_entrez %>% 
+  filter(!ensembl_gene_id %in% ensembl_kim_entrez_to_go$V1) %>% 
+  filter(!ensembl_gene_id %in% ensembl_lun_entrez_to_go$V1)
+
+ensembl_lun_entrez_final %>% 
+  distinct(ensembl_gene_id) #629
+
+```
+
+# Check duplicates removed 
+
+```{r}
+
+ensembl_lun_entrez_final %>% 
+  filter(ensembl_gene_id %in% ensembl_kim_entrez_to_go$V1) %>% 
+  filter(ensembl_gene_id %in% ensembl_lun_entrez_to_go$V1)
+
+```
+
+### Translate Uniprot Gene IDs
+
+```{r}
+
+ensembl_ids_lun_uni <- getBM(attributes = c('ensembl_gene_id', 'uniprot_gn_id'),
+      filters = 'uniprot_gn_id', 
+      values = unique(kinases_lun_tidy$uniprot_gn_id), 
+      mart = ensembl)
+
+```
+
+# Join Ensembl IDs to original dataset
+
+```{r}
+
+ensembl_lun_uni <- full_join(kinases_lun_tidy, ensembl_ids_lun_uni)
+
+```
+
+# Check for and remove NAs and duplicates, if any
+
+```{r}
+
+sum(is.na(ensembl_lun_uni$ensembl_gene_id))
+
+```
+
+```{r}
+
+ensembl_lun_uni <- ensembl_lun_uni %>% 
+  drop_na(ensembl_gene_id)
+
+```
+
+```{r}
+
+sum(duplicated(ensembl_lun_uni))
+
+```
+
+### Check for duplicates 
+
+```{r}
+
+lun_uni_dupes <- ensembl_lun_uni %>% 
+	get_dupes(uniprot_gn_id) %>% 
+	distinct(uniprot_gn_id, ensembl_gene_id) %>%
+	get_dupes(uniprot_gn_id) %>% 
+	distinct(uniprot_gn_id) %>% 
+  pull(uniprot_gn_id)
+
+```
+	
+# Manual check of duplicates
+
+I will need to manually check each one.
+
+```{r}
+
+ensembl_lun_uni_dupes <- ensembl_lun_uni %>% 
+	filter(uniprot_gn_id %in% lun_uni_dupes) %>% 
+  distinct(ensembl_gene_id) %>% 
+  pull(ensembl_gene_id)
+
+```
+
+```{r}
+
+ensembl_lun_uni_dupes <- as.data.frame(ensembl_lun_uni_dupes)
+
+```
+
+# Filter out any IDs already manually checked from Kim et al dataset
+
+```{r}
+
+ensembl_lun_uni_dupes <- ensembl_lun_uni_dupes %>% 
+  filter(!ensembl_lun_uni_dupes %in% ensembl_kim_entrez_to_go$V1) %>% 
+  filter(!ensembl_lun_uni_dupes %in% ensembl_lun_entrez_to_go$V1)
+
+```
+
+# Write CSV file for manual check from Excel
+
+```{r}
+
+write.csv(ensembl_lun_uni_dupes, here::here("Output/ensembl_lun_uni_dupes.csv"))
+
+```
+
+# Import manually checked IDs to be removed
+
+```{r}
+
+ensembl_lun_uni_to_go <- read.table(here::here("Output/ensembl_lun_uni_alt.csv"))
+
+```
+
+# Filter out 'Alternative Sequence' IDs
+
+```{r}
+
+ensembl_lun_uni_final <- ensembl_lun_uni %>% 
+  filter(!ensembl_gene_id %in% ensembl_kim_entrez_to_go$V1) %>% 
+  filter(!ensembl_gene_id %in% ensembl_lun_entrez_to_go$V1) %>% 
+  filter(!ensembl_gene_id %in% ensembl_lun_uni_to_go$V1)
+
+ensembl_lun_uni_final %>% 
+  distinct(ensembl_gene_id) #610
+
+```
+
+# Check duplicates removed 
+
+```{r}
+
+ensembl_lun_uni_final %>% 
+  filter(ensembl_gene_id %in% ensembl_kim_entrez_to_go$V1) %>% 
+  filter(ensembl_gene_id %in% ensembl_lun_entrez_to_go$V1) %>% 
+  filter(ensembl_gene_id %in% ensembl_lun_uni_to_go$V1)
+
+```
+
+
+
+# 3. Modi and Dunbrak 
+
+# Use glimpse() to identify gene ID(s) for translation 
+
+```{r}
+
+glimpse(kinases_modidun_tidy)
+
+```
+
+### Translate HGNC IDs
+
+```{r}
+
+ensembl_ids_modidun_hgnc <- getBM(attributes = c('ensembl_gene_id', 'hgnc_id'),
+      filters = 'hgnc_id', 
+      values = unique(kinases_modidun_tidy$hgnc_id), 
+      mart = ensembl)
+
+```
+
+# Join HGNC IDs to original dataset
+
+```{r}
+
+ensembl_modidun_hgnc <- full_join(kinases_modidun_tidy, ensembl_ids_modidun_hgnc, by = "hgnc_id") 
+
+```
+
+# Check for and remove NAs and duplicates, if any
+
+```{r}
+
+sum(is.na(ensembl_modidun_hgnc$ensembl_gene_id))
+
+```
+
+```{r}
+
+sum(duplicated(ensembl_modidun_hgnc))
+
+```
+
+### Check for duplicates 
+
+```{r}
+
+modi_hgnc_dupes <- ensembl_modidun_hgnc %>% 
+	get_dupes(hgnc_id) %>% 
+	distinct(hgnc_id, ensembl_gene_id) %>%
+	get_dupes(hgnc_id) %>% 
+	distinct(hgnc_id) %>% 
+  pull(hgnc_id)
+
+```
+	
+# Manual check of duplicates
+
+I will need to manually check each one.
+
+```{r}
+
+ensembl_modi_hgnc_dupes <- ensembl_modidun_hgnc %>% 
+	filter(hgnc_id %in% modi_hgnc_dupes) %>% 
+  distinct(ensembl_gene_id) %>% 
+  pull(ensembl_gene_id)
+
+```
+
+```{r}
+
+ensembl_modi_hgnc_dupes <- as.data.frame(ensembl_modi_hgnc_dupes)
+
+```
+
+# Filter out any IDs already manually checked from previous datasets
+
+```{r}
+
+ensembl_modi_hgnc_dupes <- ensembl_modi_hgnc_dupes %>% 
+  filter(!ensembl_modi_hgnc_dupes %in% ensembl_kim_entrez_to_go$V1) %>% 
+  filter(!ensembl_modi_hgnc_dupes %in% ensembl_lun_entrez_to_go$V1) %>% 
+  filter(!ensembl_modi_hgnc_dupes %in% ensembl_lun_uni_to_go$V1)
+
+```
+
+# Write CSV file for manual check from Excel
+
+```{r}
+
+write.csv(ensembl_modi_hgnc_dupes, here::here("Output/ensembl_modi_hgnc_dupes.csv"))
+
+```
+
+# Import manually checked IDs to be removed
+
+```{r}
+
+ensembl_modi_hgnc_to_go <- read.table(here::here("Output/ensembl_modi_hgnc_alt.csv"))
+
+```
+
+# Filter out 'Alternative Sequence' IDs
+
+```{r}
+
+ensembl_modi_hgnc_final <- ensembl_modidun_hgnc %>%
+  filter(!ensembl_gene_id %in% ensembl_kim_entrez_to_go$V1) %>% 
+  filter(!ensembl_gene_id %in% ensembl_lun_entrez_to_go$V1) %>% 
+  filter(!ensembl_gene_id %in% ensembl_lun_uni_to_go$V1) %>% 
+  filter(!ensembl_gene_id %in% ensembl_modi_hgnc_to_go$V1)
+
+ensembl_modi_hgnc_final %>% 
+  distinct(ensembl_gene_id) #484
+
+```
+
+# Check duplicates removed 
+
+```{r}
+
+ensembl_lun_uni_final %>% 
+  filter(ensembl_gene_id %in% ensembl_kim_entrez_to_go$V1) %>% 
+  filter(ensembl_gene_id %in% ensembl_lun_entrez_to_go$V1) %>% 
+  filter(ensembl_gene_id %in% ensembl_lun_uni_to_go$V1) %>% 
+  filter(ensembl_gene_id %in% ensembl_modi_hgnc_to_go$V1)
+
+```
+
+### Translate Uniprot Gene IDs
+
+```{r}
+
+ensembl_ids_modidun_uni <- getBM(attributes = c('ensembl_gene_id', 'uniprot_gn_id'),
+      filters = 'uniprot_gn_id', 
+      values = unique(kinases_modidun_tidy$uniprot_gn_id), 
+      mart = ensembl)
+
+```
+
+# Join Ensembl IDs to original dataset
+
+```{r}
+
+ensembl_modidun_uni <- full_join(kinases_modidun_tidy, ensembl_ids_modidun_uni)
+
+```
+
+# Check for and remove NAs and duplicates, if any
+
+```{r}
+
+sum(is.na(ensembl_modidun_uni$ensembl_gene_id))
+
+```
+
+```{r}
+
+ensembl_modidun_uni <- ensembl_modidun_uni %>% 
+  drop_na(ensembl_gene_id)
+
+```
+
+```{r}
+
+sum(duplicated(ensembl_modidun_uni))
+
+```
+
+### Check for duplicates 
+
+```{r}
+
+modi_uni_dupes <- ensembl_modidun_uni %>% 
+	get_dupes(uniprot_gn_id) %>% 
+	distinct(uniprot_gn_id, ensembl_gene_id) %>%
+	get_dupes(uniprot_gn_id) %>% 
+	distinct(uniprot_gn_id) %>% 
+  pull(uniprot_gn_id)
+
+```
+	
+# Manual check of duplicates
+
+I will need to manually check each one.
+
+```{r}
+
+ensembl_modi_uni_dupes <- ensembl_modidun_uni %>% 
+	filter(uniprot_gn_id %in% modi_uni_dupes) %>% 
+  distinct(ensembl_gene_id) %>% 
+  pull(ensembl_gene_id)
+
+```
+
+```{r}
+
+ensembl_modi_uni_dupes <- as.data.frame(ensembl_modi_uni_dupes)
+
+```
+
+# Filter out any IDs already manually checked from previous datasets
+
+```{r}
+
+ensembl_modi_uni_dupes <- ensembl_modi_uni_dupes %>% 
+  filter(!ensembl_modi_uni_dupes %in% ensembl_kim_entrez_to_go$V1) %>% 
+  filter(!ensembl_modi_uni_dupes %in% ensembl_lun_entrez_to_go$V1) %>% 
+  filter(!ensembl_modi_uni_dupes %in% ensembl_lun_uni_to_go$V1) %>% 
+  filter(!ensembl_modi_uni_dupes  %in% ensembl_modi_hgnc_to_go$V1)
+
+```
+
+# Write CSV file for manual check from Excel
+
+```{r}
+
+write.csv(ensembl_modi_uni_dupes, here::here("Output/ensembl_modi_uni_dupes.csv"))
+
+```
+
+# No IDs to be removed following manual check
+
+# Check no duplicates remain
+
+```{r}
+
+ensembl_modidun_uni %>% 
+  filter(ensembl_gene_id %in% ensembl_kim_entrez_to_go$V1) %>% 
+  filter(ensembl_gene_id %in% ensembl_lun_entrez_to_go$V1) %>% 
+  filter(ensembl_gene_id %in% ensembl_lun_uni_to_go$V1) %>% 
+  filter(ensembl_gene_id %in% ensembl_modi_hgnc_to_go$V1)
+
+```
+
+```{r}
+
+ensembl_modi_uni_final <- ensembl_modidun_uni
+
+```
+
+# 4. Schmidlin et al
+
+# Use glimpse() to identify gene ID(s) for translation 
+
+```{r}
+
+glimpse(kinases_schmidlin_tidy)
+
+```
+
+### Translate Uniprot IDs
+
+```{r}
+
+ensembl_ids_schmidlin_uni <- getBM(attributes = c('ensembl_gene_id', 'uniprot_gn_id'),
+      filters = 'uniprot_gn_id', 
+      values = unique(kinases_schmidlin_tidy$uniprot_gn_id), 
+      mart = ensembl)
+
+```
+
+# Join Ensembl IDs to original dataset
+
+```{r}
+
+ensembl_schmidlin_uni <- full_join(kinases_schmidlin_tidy, ensembl_ids_schmidlin_uni, by = "uniprot_gn_id")
+
+```
+
+# Check for and remove NAs and duplicates, if any
+
+```{r}
+
+sum(is.na(ensembl_schmidlin_uni$ensembl_gene_id))
+
+```
+
+```{r}
+
+ensembl_schmidlin_uni <- ensembl_schmidlin_uni %>% 
+  drop_na(ensembl_gene_id)
+
+```
+
+```{r}
+
+sum(duplicated(ensembl_schmidlin_uni))
+
+```
+
+### Check for duplicates 
+
+```{r}
+
+schmidlin_dupes <- ensembl_schmidlin_uni %>% 
+	get_dupes(uniprot_gn_id) %>% 
+	distinct(uniprot_gn_id, ensembl_gene_id) %>%
+	get_dupes(uniprot_gn_id) %>% 
+	distinct(uniprot_gn_id) %>% 
+  pull(uniprot_gn_id)
+
+```
+	
+# Manual check of duplicates
+
+I will need to manually check each one.
+
+```{r}
+
+ensembl_schmidlin_dupes <- ensembl_schmidlin_uni %>% 
+	filter(uniprot_gn_id %in% schmidlin_dupes) %>% 
+  distinct(ensembl_gene_id) %>% 
+  pull(ensembl_gene_id)
+
+```
+
+```{r}
+
+ensembl_schmidlin_dupes <- as.data.frame(ensembl_schmidlin_dupes)
+
+```
+
+# Filter out any IDs already manually checked from previous datasets
+
+```{r}
+
+ensembl_schmidlin_dupes <- ensembl_schmidlin_dupes %>% 
+  filter(!ensembl_schmidlin_dupes %in% ensembl_kim_entrez_to_go$V1) %>% 
+  filter(!ensembl_schmidlin_dupes %in% ensembl_lun_entrez_to_go$V1) %>% 
+  filter(!ensembl_schmidlin_dupes %in% ensembl_lun_uni_to_go$V1) %>% 
+  filter(!ensembl_schmidlin_dupes %in% ensembl_modi_hgnc_to_go$V1)
+
+```
+
+# Write CSV file for manual check from Excel
+
+```{r}
+
+write.csv(ensembl_schmidlin_dupes, here::here("Output/ensembl_schmidlin_dupes.csv"))
+
+```
+
+# No IDs to be removed following manual check
+
+# Check no duplicates remain 
+
+```{r}
+
+ensembl_schmidlin_uni %>% 
+  filter(ensembl_gene_id %in% ensembl_kim_entrez_to_go$V1) %>% 
+  filter(ensembl_gene_id %in% ensembl_lun_entrez_to_go$V1) %>% 
+  filter(ensembl_gene_id %in% ensembl_lun_uni_to_go$V1) %>% 
+  filter(ensembl_gene_id %in% ensembl_modi_hgnc_to_go$V1)
+
+```
+
+```{r}
+
+ensembl_schmidlin_final <- ensembl_schmidlin_uni
+
+```
+
+
+# 5. all_human_kinases dataset
+
+# Use glimpse() to identify gene ID(s) for translation 
+
+```{r}
+
+glimpse(all_human_kinases)
+
+```
+
+## Retrieve Ensembl IDs
+
+Dataset contains Uniprot gene IDs 
+
+# Translate Uniprot IDs
+
+```{r}
+
+ensembl_ids_allhuman_uni <- getBM(attributes = c('ensembl_gene_id', 'uniprot_gn_id'),
+      filters = 'uniprot_gn_id', 
+      values = unique(all_human_kinases$uniprot_id), 
+      mart = ensembl)
+
+```
+
+# Join Ensembl IDs to original dataset
+
+```{r}
+
+all_human_kinases <- all_human_kinases %>% 
+  dplyr::rename(uniprot_gn_id = uniprot_id)
+
+```
+
+```{r}
+
+ensembl_allhuman_uni <- full_join(all_human_kinases, ensembl_ids_allhuman_uni, by = "uniprot_gn_id")
+
+```
+
+```{r}
+
+ensembl_allhuman_uni <- ensembl_allhuman_uni[-c(577:579), ] 
+
+```
+
+# Check for and remove NAs and duplicates, if any
+
+```{r}
+
+sum(is.na(ensembl_allhuman_uni$ensembl_gene_id))
+
+```
+
+```{r}
+
+ensembl_allhuman_uni <- ensembl_allhuman_uni %>% 
+  drop_na(ensembl_gene_id)
+
+```
+
+```{r}
+
+sum(duplicated(ensembl_allhuman_uni))
+
+```
+
+### Check for duplicates 
+
+```{r}
+
+allhuman_dupes <- ensembl_allhuman_uni %>% 
+	get_dupes(uniprot_gn_id) %>% 
+	distinct(uniprot_gn_id, ensembl_gene_id) %>%
+	get_dupes(uniprot_gn_id) %>% 
+	distinct(uniprot_gn_id) %>% 
+  pull(uniprot_gn_id)
+
+```
+	
+# Manual check of duplicates
+
+I will need to manually check each one.
+
+```{r}
+
+ensembl_allhuman_dupes <- ensembl_allhuman_uni %>% 
+	filter(uniprot_gn_id %in% allhuman_dupes) %>% 
+  distinct(ensembl_gene_id) %>% 
+  pull(ensembl_gene_id)
+
+```
+
+```{r}
+
+ensembl_allhuman_dupes <- as.data.frame(ensembl_allhuman_dupes)
+
+```
+
+# Filter out any IDs already manually checked from previous datasets
+
+```{r}
+
+ensembl_allhuman_dupes <- ensembl_allhuman_dupes %>% 
+  filter(!ensembl_allhuman_dupes %in% ensembl_kim_entrez_to_go$V1) %>% 
+  filter(!ensembl_allhuman_dupes %in% ensembl_lun_entrez_to_go$V1) %>% 
+  filter(!ensembl_allhuman_dupes %in% ensembl_lun_entrez_to_go$V1) %>% 
+  filter(!ensembl_allhuman_dupes %in% ensembl_modi_hgnc_to_go$V1)
+
+```
+
+# Write CSV file for manual check from Excel
+
+```{r}
+
+write.csv(ensembl_allhuman_dupes, here::here("Output/ensembl_allhuman_dupes.csv"))
+
+```
+
+# Import manually checked IDs to be removed
+
+```{r}
+
+ensembl_allhuman_to_go <- read.table(here::here("Output/ensembl_allhuman_alt.csv"))
+
+```
+
+# Filter out 'Alternative Sequence' IDs
+
+```{r}
+
+ensembl_allhuman_final <- ensembl_allhuman_uni %>% 
+  filter(!ensembl_gene_id %in% ensembl_kim_entrez_to_go$V1) %>% 
+  filter(!ensembl_gene_id %in% ensembl_lun_entrez_to_go$V1) %>% 
+  filter(!ensembl_gene_id %in% ensembl_lun_uni_to_go$V1) %>% 
+  filter(!ensembl_gene_id %in% ensembl_modi_hgnc_to_go$V1) %>% 
+  filter(!ensembl_gene_id %in% ensembl_allhuman_to_go$V1) 
+
+ensembl_allhuman_final %>% 
+  distinct(ensembl_gene_id) #513
+
+```
+
+# Check duplicates removed 
+
+```{r}
+
+ensembl_allhuman_final %>% 
+  filter(ensembl_gene_id %in% ensembl_kim_entrez_to_go$V1) %>% 
+  filter(ensembl_gene_id %in% ensembl_lun_entrez_to_go$V1) %>% 
+  filter(ensembl_gene_id %in% ensembl_lun_uni_to_go$V1) %>% 
+  filter(ensembl_gene_id %in% ensembl_modi_hgnc_to_go$V1) %>% 
+  filter(ensembl_gene_id %in% ensembl_allhuman_to_go$V1)
+
+```
+
+I now need to join all of the Ensembl IDs to create an complete set of all retrieved Ensembl IDs. This can then be counted by unique Ensembl IDs to determine how many IDs have been retrieved for the ~500-600 kinases in the data.
+
+### Join all Ensembl IDs
+
+Before the datasets can be joined, I want to count the number of unique Ensembl IDs across all datasets to check for accuracy later.
+
+
+# Join all Ensembl IDs from all translations together
+
+```{r}
+
+IDs_kim_entrez <- ensembl_kim_entrez_final$ensembl_gene_id
+IDs_kim_entrez <- as.data.frame(IDs_kim_entrez) %>% 
+  dplyr::rename(ensembl_gene_id = IDs_kim_entrez)
+
+IDs_lun_entrez <- ensembl_lun_entrez_final$ensembl_gene_id
+IDs_lun_entrez <- as.data.frame(IDs_lun_entrez) %>% 
+  dplyr::rename(ensembl_gene_id = IDs_lun_entrez)
+
+IDs_lun_uni <- ensembl_lun_uni_final$ensembl_gene_id
+IDs_lun_uni <- as.data.frame(IDs_lun_uni) %>% 
+  dplyr::rename(ensembl_gene_id = IDs_lun_uni)
+
+IDs_modi_hgnc <- ensembl_modi_hgnc_final$ensembl_gene_id
+IDs_modi_hgnc <- as.data.frame(IDs_modi_hgnc) %>% 
+  dplyr::rename(ensembl_gene_id = IDs_modi_hgnc)
+
+IDs_modi_uni <- ensembl_modi_uni_final$ensembl_gene_id
+IDs_modi_uni <- as.data.frame(IDs_modi_uni) %>% 
+  dplyr::rename(ensembl_gene_id = IDs_modi_uni)
+
+IDs_schmidlin_uni <- ensembl_schmidlin_final$ensembl_gene_id
+IDs_schmidlin_uni <- as.data.frame(IDs_schmidlin_uni) %>% 
+  dplyr::rename(ensembl_gene_id = IDs_schmidlin_uni)
+
+IDs_allhuman_uni <- ensembl_allhuman_final$ensembl_gene_id
+IDs_allhuman_uni <- as.data.frame(IDs_allhuman_uni) %>% 
+  dplyr::rename(ensembl_gene_id = IDs_allhuman_uni)
+
+```
+
+```{r}
+
+ensembl_all <- rbind(IDs_kim_entrez, IDs_lun_entrez, IDs_lun_uni, IDs_modi_hgnc, IDs_modi_uni, IDs_schmidlin_uni, IDs_allhuman_uni) 
+
+```
+
+# Check for and remove NAs and duplicated Ensembl IDs
+
+```{r}
+
+sum(is.na(ensembl_all$ensembl_gene_id))
+
+```
+
+```{r}
+
+sum(duplicated(ensembl_all))
+
+```
+
+```{r}
+
+ensembl_all %>% 
+  count() #3663
+
+```
+
+Joining all Ensembl IDs produces a dataset with 3663 entries. I will now look at unique Ensembl IDs alone to establish how many unique Ensembl IDs remain.
+
+```{r}
+
+unique_ensembl <- distinct(ensembl_all)
+
+```
+
+```{r}
+
+unique_ensembl %>% 
+  count() #843
+
+``` 
+
+```{r}
+
+unique_ensembl %>% 
+  filter(ensembl_gene_id %in% ensembl_kim_entrez_to_go$V1) %>% 
+  filter(ensembl_gene_id %in% ensembl_lun_entrez_to_go$V1) %>% 
+  filter(ensembl_gene_id %in% ensembl_lun_uni_to_go$V1) %>% 
+  filter(ensembl_gene_id %in% ensembl_modi_hgnc_to_go$V1) %>% 
+  filter(ensembl_gene_id %in% ensembl_allhuman_to_go$V1)
+
+```
+
+Across all datasets, a total of 843 unique Ensembl IDs have been retrieved.
+
+I will join all the datasets by Ensembl ID to ensure all kinases are captured. To prevent duplication due to irregular naming conventions/descriptions, I will join only by Ensembl IDs and the original ID to begin and add further information once I have a complete set of identifiers.
+
+
+
+### Join all final datasets
+
+Before joining the datasets, I will remove columns where information cannot be completed (I can add these columns back in later, if necessary)
+
+# Remove superfluous columns from all datasets
+
+```{r}
+
+ensembl_allhuman_final <- ensembl_allhuman_final %>% 
+  dplyr::select(name, hgnc_name, ensembl_gene_id, uniprot_gn_id) %>% 
+  dplyr::rename(gene_name = name, hgnc_symbol = hgnc_name)
+
+```
+
+```{r}
+
+ensembl_kim_entrez_final <- ensembl_kim_entrez_final %>% 
+  dplyr::select(gene_name, entrezgene_id, ensembl_gene_id, gene_desc) 
+
+```
+
+```{r}
+
+ensembl_lun_entrez_final <- ensembl_lun_entrez_final %>% 
+  dplyr::select(gene_name, entrezgene_id, ensembl_gene_id, uniprot_gn_id, uniprot_name, gene_desc) %>%  
+  dplyr::rename(description = gene_desc)
+
+```
+
+```{r}
+
+ensembl_lun_uni_final <- ensembl_lun_uni_final %>% 
+  dplyr::select(gene_name, entrezgene_id, ensembl_gene_id, uniprot_gn_id, uniprot_name, gene_desc) %>%  
+  dplyr::rename(description = gene_desc)
+
+```
+
+```{r}
+
+ensembl_modi_hgnc_final <- ensembl_modi_hgnc_final %>% 
+  dplyr::select(gene_name, ensembl_gene_id, hgnc_id, uniprot_gn_id, uniprot_name) 
+
+```
+
+```{r}
+
+ensembl_modi_uni_final <- ensembl_modi_uni_final %>% 
+  dplyr::select(gene_name, ensembl_gene_id, hgnc_id, uniprot_gn_id, uniprot_name) 
+
+```
+
+```{r}
+
+ensembl_schmidlin_final <- ensembl_schmidlin_final %>% 
+  dplyr::select(ensembl_gene_id, uniprot_gn_id, uniprot_name) 
+
+```
+
+# Join Entrez datasets
+
+```{r}
+
+all_entrez <- full_join(ensembl_kim_entrez_final, ensembl_lun_entrez_final) %>% 
+  dplyr::select(gene_name, entrezgene_id, ensembl_gene_id, uniprot_gn_id, uniprot_name, gene_desc, description)
+
+```
+
+# Check for NAs and duplicates
+
+```{r}
+
+map(all_entrez, ~sum(is.na(.)))
+
+```
+
+```{r}
+
+sum(duplicated(all_entrez))
+
+```
+
+# Join Uniprot datasets
+
+```{r}
+
+all_uni <- full_join(ensembl_lun_uni_final, ensembl_modi_uni_final) 
+
+```
+
+```{r}
+
+all_uni <- full_join(all_uni, ensembl_schmidlin_final) 
+
+```
+
+```{r}
+
+all_uni <- full_join(all_uni, ensembl_allhuman_final) %>% 
+  dplyr::select(gene_name, hgnc_symbol, entrezgene_id, ensembl_gene_id, hgnc_id, uniprot_gn_id, uniprot_name, description)
+
+```
+
+# Check for NAs and duplicates
+
+```{r}
+
+map(all_uni, ~sum(is.na(.)))
+
+```
+
+```{r}
+
+sum(duplicated(all_uni))
+
+```
+
+```{r}
+
+all_uni <- unique(all_uni)
+
+```
+
+# Join Entrez and Uniprot data
+
+```{r}
+
+all_uni$entrezgene_id <- as.character(all_uni$entrezgene_id)
+
+```
+
+```{r}
+
+entrez_uni <- full_join(all_entrez, all_uni) 
+
+```
+
+# Check for NAs and duplicates
+
+```{r}
+
+map(entrez_uni, ~sum(is.na(.)))
+
+```
+
+```{r}
+
+sum(duplicated(entrez_uni))
+
+```
+
+# Join HGNC IDs
+
+```{r}
+
+x <- full_join(entrez_uni, ensembl_modi_hgnc_final) %>% 
+  dplyr::select(gene_name, hgnc_symbol, entrezgene_id, ensembl_gene_id, hgnc_id, uniprot_gn_id, uniprot_name, gene_desc, description)
+
+```
+
+# Replace any missing values with NA
+
+```{r}
+
+x <- x %>% 
+ replace_with_na(replace = list(gene_name = "")) %>%
+ replace_with_na(replace = list(hgnc_symbol = "")) %>% 
+ replace_with_na(replace = list(entrezgene_id = "")) %>% 
+ replace_with_na(replace = list(ensembl_gene_id = "")) %>% 
+ replace_with_na(replace = list(hgnc_id = "")) %>% 
+ replace_with_na(replace = list(uniprot_gn_id = "")) %>% 
+ replace_with_na(replace = list(uniprot_name = "")) %>% 
+ replace_with_na(replace = list(gene_desc = "")) %>% 
+ replace_with_na(replace = list(description = ""))
+
+```
+
+
+# Check for NAs and duplicates
+
+```{r}
+
+map(x, ~sum(is.na(.)))
+
+```
+
+```{r}
+
+sum(duplicated(x))
+
+```
+
+```{r}
+
+x %>% 
+  dplyr::count(ensembl_gene_id, sort = TRUE) #843
+
+```
+
+I will now attempt to retrieve an HGNC symbol (name) and description to try to add some consistency to these columns for each gene, where possible. 
+
+# Ensembl to HGNC symbols
+
+```{r}
+
+ensembl_to_hgnc_sym <- getBM(attributes = c('ensembl_gene_id', 'hgnc_symbol'),
+      filters = 'ensembl_gene_id', 
+      values = unique(x$ensembl_gene_id), 
+      mart = ensembl)
+
+```
+
+```{r}
+
+ensembl_to_hgnc_sym <- ensembl_to_hgnc_sym %>% 
+ replace_with_na(replace = list(hgnc_symbol = ""))  
+
+```
+
+```{r}
+
+ensembl_to_hgnc_sym <- ensembl_to_hgnc_sym %>% 
+  drop_na(hgnc_symbol)
+
+```
+
+# Join to x dataset
+
+```{r}
+
+x <- full_join(x, ensembl_to_hgnc_sym)
+ 
+```
+
+```{r}
+
+map(x, ~sum(is.na(.)))
+
+```
+
+```{r}
+
+sum(duplicated(x))
+
+```
+
+```{r}
+
+unique_ensembl <- unique(x$ensembl_gene_id) %>%
+  as.data.frame()
+
+count(unique_ensembl) #843
+
+```
+
+# Entrez to HGNC symbols
+
+```{r}
+
+entrez_to_hgnc_sym <- getBM(attributes = c('entrezgene_id', 'hgnc_symbol'),
+      filters = 'entrezgene_id', 
+      values = unique(x$entrezgene_id), 
+      mart = ensembl)
+
+```
+
+```{r}
+
+entrez_to_hgnc_sym <- entrez_to_hgnc_sym %>% 
+ replace_with_na(replace = list(hgnc_symbol = ""))  
+
+```
+
+```{r}
+
+entrez_to_hgnc_sym <- entrez_to_hgnc_sym %>% 
+  drop_na(hgnc_symbol)
+
+```
+
+# Join to x dataset
+
+```{r}
+
+entrez_to_hgnc_sym$entrezgene_id <- as.character(entrez_to_hgnc_sym$entrezgene_id)
+
+```
+
+```{r}
+
+x <- full_join(x, entrez_to_hgnc_sym, by = "entrezgene_id") %>% 
+  mutate(hgnc_symbol = coalesce(hgnc_symbol.y, hgnc_symbol.x)) %>% 
+  dplyr::select(gene_name, hgnc_symbol, entrezgene_id, ensembl_gene_id, hgnc_id, uniprot_gn_id, uniprot_name, gene_desc, description)
+
+```
+
+```{r}
+
+map(x, ~sum(is.na(.)))
+
+```
+
+```{r}
+
+unique_ensembl <- unique(x$ensembl_gene_id) %>%
+  as.data.frame()
+
+count(unique_ensembl) #843
+
+```
+
+# Uniprot to HGNC symbols
+
+```{r}
+
+uniprot_to_hgnc_sym <- getBM(attributes = c('uniprot_gn_id', 'hgnc_symbol'),
+      filters = 'uniprot_gn_id', 
+      values = unique(x$uniprot_gn_id), 
+      mart = ensembl)
+
+```
+
+```{r}
+
+uniprot_to_hgnc_sym <- uniprot_to_hgnc_sym %>% 
+ replace_with_na(replace = list(hgnc_symbol = ""))  
+
+```
+
+```{r}
+
+uniprot_to_hgnc_sym <- uniprot_to_hgnc_sym %>% 
+  drop_na(hgnc_symbol)
+
+```
+
+# Join to x dataset
+
+```{r}
+
+x <- full_join(x, uniprot_to_hgnc_sym, by = "uniprot_gn_id") %>% 
+  mutate(hgnc_symbol = coalesce(hgnc_symbol.y, hgnc_symbol.x)) %>% 
+  dplyr::select(gene_name, hgnc_symbol, entrezgene_id, ensembl_gene_id, hgnc_id, uniprot_gn_id, uniprot_name, gene_desc, description)
+
+```
+
+```{r}
+
+map(x, ~sum(is.na(.)))
+
+```
+
+```{r}
+
+unique_ensembl <- unique(x$ensembl_gene_id) %>%
+  as.data.frame()
+
+count(unique_ensembl) #843
+
+```
+
+I wil now translate the HGNC symbols to HGNC IDs and add these to the dataset
+
+# HGNC symbols to HGNC IDs
+
+```{r}
+
+hgnc_sym_to_id <- getBM(attributes = c('hgnc_symbol', 'hgnc_id'),
+      filters = 'hgnc_symbol', 
+      values = unique(x$hgnc_symbol), 
+      mart = ensembl)
+
+```
+
+```{r}
+
+hgnc_sym_to_id <- hgnc_sym_to_id %>% 
+ replace_with_na(replace = list(hgnc_id = ""))  
+
+```
+
+```{r}
+
+hgnc_sym_to_id <- hgnc_sym_to_id %>% 
+  drop_na(hgnc_id)
+
+```
+
+# Join to x dataset
+
+```{r}
+
+x <- full_join(x, hgnc_sym_to_id, by = "hgnc_symbol") %>% 
+  mutate(hgnc_id = coalesce(hgnc_id.y, hgnc_id.x)) %>% 
+  dplyr::select(gene_name, hgnc_symbol, entrezgene_id, ensembl_gene_id, hgnc_id, uniprot_gn_id, uniprot_name, gene_desc, description)
+
+```
+
+```{r}
+
+map(x, ~sum(is.na(.)))
+
+```
+
+```{r}
+
+unique_ensembl <- unique(x$ensembl_gene_id) %>%
+  as.data.frame()
+
+count(unique_ensembl) #843
+
+```
+
+```{r}
+
+na_hgnc_sym <- x %>% 
+  filter(is.na(hgnc_symbol))
+         
+```
+
+```{r}
+
+hgnc_id_to_sym <- getBM(attributes = c('hgnc_id', 'hgnc_symbol'),
+      filters = 'hgnc_id', 
+      values = unique(na_hgnc_sym$hgnc_id), 
+      mart = ensembl)
+
+```
+
+```{r}
+
+hgnc_id_to_sym <- hgnc_id_to_sym %>% 
+ replace_with_na(replace = list(hgnc_symbol = ""))  
+
+```
+
+```{r}
+
+hgnc_id_to_sym <- hgnc_id_to_sym %>% 
+  drop_na(hgnc_symbol)
+
+```
+
+# Join to x dataset
+
+```{r}
+
+x <- full_join(x, hgnc_id_to_sym, by = "hgnc_id") %>% 
+  mutate(hgnc_symbol = coalesce(hgnc_symbol.y, hgnc_symbol.x)) %>% 
+  dplyr::select(gene_name, hgnc_symbol, entrezgene_id, ensembl_gene_id, hgnc_id, uniprot_gn_id, uniprot_name, gene_desc, description)
+
+```
+
+```{r}
+
+map(x, ~sum(is.na(.)))
+
+```
+
+# Descriptions
+
+```{r}
+
+ensembl_to_desc <- getBM(attributes = c('ensembl_gene_id', 'description'),
+      filters = 'ensembl_gene_id', 
+      values = unique(x$ensembl_gene_id), 
+      mart = ensembl)
+
+```
+
+```{r}
+
+ensembl_to_desc <- ensembl_to_desc %>% 
+ replace_with_na(replace = list(description = ""))  
+
+```
+
+```{r}
+
+ensembl_to_desc <- ensembl_to_desc %>% 
+  drop_na(description)
+
+```
+
+```{r}
+
+ensembl_to_desc <- ensembl_to_desc %>% 
+  dplyr::rename(new_description = description)
+
+```
+
+# Join to x dataset
+
+```{r}
+
+x <- full_join(x, ensembl_to_desc) 
+
+```
+
+```{r}
+
+map(x, ~sum(is.na(.)))
+
+```
+
+```{r}
+
+unique_ensembl <- unique(x$ensembl_gene_id) %>%
+  as.data.frame()
+
+count(unique_ensembl) #843
+
+```
+
+# Check ID without a HGNC symbol 
+
+```{r}
+
+x %>% 
+  filter(is.na(hgnc_symbol))
+
+```
+
+# Remove gene 'LOC390877' (identified as 'common carp' in original description)
+
+```{r}
+
+x <- x %>% 
+  drop_na(hgnc_symbol)
+
+```
+
+```{r}
+
+unique_ensembl <- unique(x$ensembl_gene_id) %>%
+  as.data.frame()
+
+count(unique_ensembl) #842
+
+```
+
+There are now 842 unique Ensembl gene IDs in the dataset
+
+# Drop superfluous description columns and Uniprot name
+
+```{r}
+
+x <- x %>% 
+  dplyr::select(gene_name, hgnc_symbol, entrezgene_id, ensembl_gene_id, hgnc_id, uniprot_gn_id, new_description) %>% 
+  dplyr::rename(description = new_description)
+
+```
+
+```{r}
+
+map(x, ~sum(is.na(.)))
+
+```
+
+```{r}
+
+sum(duplicated(x))
+
+```
+
+```{r}
+
+x <- unique(x)
+
+```
+
+```{r}
+
+unique_ensembl <- unique(x$ensembl_gene_id) %>%
+  as.data.frame()
+
+count(unique_ensembl) #842
+
+```
+
+### Resolve NAs
+
+To complete the dataset, I will attempt to resolve the NAs in the data by searching with alternative identifiers. 
+
+# Extract rows with NAs
+
+```{r}
+
+NA_entrez <- x %>% 
+  filter(is.na(entrezgene_id))
+
+```
+
+```{r}
+
+NA_uni <- x %>% 
+  filter(is.na(uniprot_gn_id))
+
+```
+
+# Search for identifiers 
+
+# Entrez gene IDs
+
+```{r}
+
+NA_ids_entrez <- getBM(attributes = c('ensembl_gene_id', 'entrezgene_id'),
+      filters = 'ensembl_gene_id', 
+      values = unique(NA_entrez$ensembl_gene_id), 
+      mart = ensembl)
+
+```
+
+# Join to x dataset
+
+```{r}
+
+NA_ids_entrez$entrezgene_id <- as.character(NA_ids_entrez$entrezgene_id)
+
+```
+
+```{r}
+
+x <- full_join(x, NA_ids_entrez, by = "ensembl_gene_id") %>% 
+  mutate(entrezgene_id = coalesce(entrezgene_id.y, entrezgene_id.x)) %>% 
+  dplyr::select(gene_name, hgnc_symbol, entrezgene_id, ensembl_gene_id, hgnc_id, uniprot_gn_id, description)
+
+```
+
+```{r}
+
+x <- x %>% 
+ replace_with_na(replace = list(entrezgene_id = "")) 
+
+```
+  
+```{r}
+
+map(x, ~sum(is.na(.)))
+
+```
+
+```{r}
+
+sum(duplicated(x))
+
+```
+
+```{r}
+
+x <- unique(x)
+
+```
+
+# Uniprot gene IDs
+
+```{r}
+
+NA_ids_uni <- getBM(attributes = c('ensembl_gene_id', 'uniprot_gn_id'),
+      filters = 'ensembl_gene_id', 
+      values = unique(NA_uni$ensembl_gene_id), 
+      mart = ensembl)
+
+```
+
+# Join to x dataset
+
+```{r}
+
+x <- full_join(x, NA_ids_uni, by = "ensembl_gene_id") %>% 
+  mutate(uniprot_gn_id = coalesce(uniprot_gn_id.y, uniprot_gn_id.x)) %>% 
+  dplyr::select(gene_name, hgnc_symbol, entrezgene_id, ensembl_gene_id, hgnc_id, uniprot_gn_id, description)
+
+```
+
+```{r}
+
+x <- x %>% 
+ replace_with_na(replace = list(uniprot_gn_id = "")) 
+
+```
+  
+```{r}
+
+map(x, ~sum(is.na(.)))
+
+```
+
+```{r}
+
+sum(duplicated(x))
+
+```
+
+```{r}
+
+x <- unique(x)
+
+```
+
+```{r}
+
+unique_ensembl <- unique(x$ensembl_gene_id) %>%
+  as.data.frame()
+
+count(unique_ensembl) #842
+
+```
+
+# Check duplicates created due to missing gene name 
+
+```{r}
+
+no_gene_name <- x %>% 
+  dplyr::select(-gene_name)
+  
+```
+
+```{r}
+
+sum(duplicated(no_gene_name))
+
+```
+
+```{r}
+
+unique_no_gene_name <- unique(no_gene_name)
+
+```
+
+```{r}
+
+map(unique_no_gene_name, ~sum(is.na(.)))
+
+```
+
+```{r}
+
+unique_ensembl <- unique(unique_no_gene_name$ensembl_gene_id) %>%
+  as.data.frame()
+
+count(unique_ensembl) #842
+
+```
+
+Missing gene names are causing a massive duplication of the data without losing any of the original information. As such, I will create a gene name data frame, remove the column and duplications and then add the original gene names back into the dataset. 
+
+# Create gene_names data frame
+
+```{r}
+
+gene_names <- x %>% 
+  dplyr::select(gene_name, ensembl_gene_id)
+
+```
+
+```{r}
+
+gene_names <- gene_names %>% 
+ replace_with_na(replace = list(gene_name = "")) 
+
+```
+
+```{r}
+
+sum(duplicated(gene_names))
+
+```
+
+```{r}
+
+ gene_names <- unique(gene_names)
+
+```
+
+```{r}
+
+gene_names <- gene_names %>% 
+  drop_na(gene_name)
+
+```
+
+# Remove gene_name duplicates
+
+```{r}
+
+x <- x %>% 
+  dplyr::select(-gene_name)
+  
+```
+
+```{r}
+
+sum(duplicated(x))
+
+```
+
+```{r}
+
+x <- unique(x)
+
+```
+
+```{r}
+
+map(x, ~sum(is.na(.)))
+
+```
+
+```{r}
+
+unique_ensembl <- unique(x$ensembl_gene_id) %>%
+  as.data.frame()
+
+count(unique_ensembl) #842
+
+```
+
+# Add original gene_names back into dataset
+
+```{r}
+
+x <- full_join(x, gene_names, by = "ensembl_gene_id") %>% 
+  dplyr::select(gene_name, hgnc_symbol, entrezgene_id, ensembl_gene_id, hgnc_id, uniprot_gn_id, description)
+
+```
+
+```{r}
+
+sum(duplicated(x))
+
+```
+
+```{r}
+
+map(x, ~sum(is.na(.)))
+
+```
+
+```{r}
+
+unique_ensembl <- unique(x$ensembl_gene_id) %>%
+  as.data.frame()
+
+count(unique_ensembl) #842
+
+```
+
+```{r}
+
+unique_hgnc <- unique(x$hgnc_symbol) %>%
+  as.data.frame()
+
+count(unique_hgnc) #815
+
+```
+
+
+
+### Add enzyme classifications and gene ontology using Bioconductor org.Hs.eg.db
+
+I will now add IUBMB enzyme classification numbers as this may help to identify genes which can be removed from the main dataset - kinases fall under enzyme classification 2.7.-.-, so genes without this identifier can be removed.
+
+# Enzyme classifications
+
+```{r}
+
+ec_ensembl <- AnnotationDbi::select(
+  org.Hs.eg.db,
+  keys = x$ensembl_gene_id,
+  keytype = "ENSEMBL",
+  columns = c("ENSEMBL", "ENZYME")
+)
+
+```
+
+```{r}
+
+ec_ensembl <- ec_ensembl %>% 
+  drop_na(ENZYME) %>% 
+  distinct(ENSEMBL, ENZYME) %>% 
+  dplyr::rename(ensembl_gene_id = ENSEMBL, enzyme_classification = ENZYME)
+
+```
+
+```{r}
+
+x <- full_join(x, ec_ensembl, by = "ensembl_gene_id") 
+
+```
+
+```{r}
+
+map(x, ~sum(is.na(.)))
+
+```
+
+```{r}
+
+sum(duplicated(x))
+
+```
+
+```{r}
+
+unique_ensembl <- unique(x$ensembl_gene_id) %>%
+  as.data.frame()
+
+count(unique_ensembl) #842
+
+```
+
+```{r}
+
+x <- x %>% 
+  dplyr::select(gene_name, hgnc_symbol, enzyme_classification, entrezgene_id, ensembl_gene_id, hgnc_id, uniprot_gn_id, description)
+
+```
+
+
+
+### Remove non-kinases from the dataset
+
+I will begin by removing those enzymes which do not fall under the correct enzyme classification (i.e. NOT EC 2.7.-.-).
+
+```{r}
+
+x <- x %>% 
+  filter(grepl("2.7.", enzyme_classification, fixed = TRUE) | is.na(enzyme_classification))
+
+```
+
+```{r}
+
+map(x, ~sum(is.na(.)))
+
+```
+
+```{r}
+
+sum(duplicated(x))
+
+```
+
+```{r}
+
+unique_ensembl <- unique(x$ensembl_gene_id) %>%
+  as.data.frame()
+
+count(unique_ensembl) #794
+
+```
+
+```{r}
+
+unique_hgnc <- unique(x$hgnc_symbol) %>%
+  as.data.frame()
+
+count(unique_hgnc) #769
+
+```
+
+Removing enzymes not within the correct classification has reduced the number of unique Ensembl IDs and HGNC names to 794 and 769, respectively.
+
+# Remove enzymes based on description
+
+I will now look more carefully at the descriptions assigned to these genes. I will first look at what remains when I remove all genes specifically described as kinases.
+
+```{r}
+
+x %>% 
+  filter(grepl("kinase", description, fixed = TRUE))
+         
+```
+
+Several have been designated descriptions which contain the word 'phosphatase' so these can be removed from the dataset (being careful not to remove any that also have kinase activity e.g. '6-phosphofructo-2-kinase/fructose-2,6-biphosphatase 1'.
+
+```{r}
+
+kin_x <- x %>% 
+  filter(grepl("kinase", description, fixed = TRUE)) 
+         
+```
+
+```{r}
+
+nonphos_x <- x %>% 
+  filter(!grepl("kinase", description, fixed = TRUE)) %>% 
+  filter(!grepl("phosphatase", description, fixed = TRUE)) 
+
+```
+
+```{r}
+
+x <- full_join(kin_x, nonphos_x)
+
+```
+
+```{r}
+
+map(x, ~sum(is.na(.)))
+
+```
+
+```{r}
+
+sum(duplicated(x))
+
+```
+
+```{r}
+
+unique_ensembl <- unique(x$ensembl_gene_id) %>%
+  as.data.frame()
+
+count(unique_ensembl) #738
+
+```
+
+```{r}
+
+unique_hgnc <- unique(x$hgnc_symbol) %>%
+  as.data.frame()
+
+count(unique_hgnc) #718
+
+```
+
+Removing enzymes with exclusive phosphatase activity has reduced the number of unique Ensembl IDs and HGNC names to 742 and 718, respectively.
+
+A manual search in the dataset shows one putative gene, which can also be removed. 
+
+```{r}
+
+x <- x %>% 
+  filter(!grepl("putative", description, fixed = TRUE)) 
+         
+```
+
+```{r}
+
+x %>% 
+  filter(grepl("kinase", description, fixed = TRUE)) %>% 
+  distinct(hgnc_symbol) #572
+  
+```
+
+Filtering the dataset down further, to those which are specifically described as kinases, results in a total of 572 unique genes, which is closer to the expected number. However, it would be fairly cavalier to assume that those which are not specifically described as kinases do not have kinase activity!
+
+
+```{r}
+
+x %>% 
+  filter(!grepl("kinase", description, fixed = TRUE)) %>% 
+  distinct(hgnc_symbol) #149
+  
+```
+
+As such. there are 149 genes which are not specifically identified as kinases, but which may have kinase activity. These genes will need to be manually checked to determine their function.
+
+# Extract unknown genes
+
+```{r}
+
+poss_kin <- x %>% 
+  filter(!grepl("kinase", description, fixed = TRUE)) %>% 
+  distinct(ensembl_gene_id) %>% 
+  pull(ensembl_gene_id)
+
+```
+
+# Write CSV file for manual check from Excel
+
+```{r}
+
+write.csv(poss_kin, here::here("Output/poss_kin.csv"))
+
+```
+
+# Import manually checked IDs to be removed
+
+```{r}
+
+non_kin <- read.table(here::here("Output/non_kin.csv"))
+
+```
+
+# Filter out non_kinase IDs
+
+```{r}
+
+x <- x %>% 
+  filter(!ensembl_gene_id %in% non_kin$V1)
+
+```
+
+# Check IDs removed 
+
+```{r}
+
+x %>% 
+  filter(ensembl_gene_id %in% non_kin$V1) 
+
+```
+
+# Check for and remove NAs and duplicates, if any
+
+
+```{r}
+
+sum(duplicated(x))
+
+```
+
+```{r}
+
+map(x, ~sum(is.na(.)))
+
+```
+
+```{r}
+
+unique_ensembl <- unique(x$ensembl_gene_id) %>%
+  as.data.frame()
+
+count(unique_ensembl) #689
+
+```
+
+```{r}
+
+unique_hgnc <- unique(x$hgnc_symbol) %>%
+  as.data.frame()
+
+count(unique_hgnc) #671
+
+```
+
+There are now a total of 689 unique Ensembl IDs and 671 unique genes. 
+
+As this still seems slightly too high a number, I will add gene ontology data and use this to further filter the dataset.
+
+### Gene ontology
+
+```{r}
+
+#BiocManager::install("GO.db")
+
+library("GO.db")
+
+```
+
+```{r}
+
+go_ensembl <- AnnotationDbi::select(
+  org.Hs.eg.db,
+  keys = x$ensembl_gene_id,
+  keytype = "ENSEMBL",
+  columns = c("ENSEMBL", "GO")
+)
+
+```
+
+```{r}
+
+go_ensembl <- go_ensembl %>% 
+  drop_na(GO) %>% 
+  distinct(ENSEMBL, GO) %>% 
+  dplyr::select(ENSEMBL, GO) %>% 
+  dplyr::rename(ensembl_gene_id = ENSEMBL, GO_id = GO)
+
+```
+
+```{r}
+
+go_x <- full_join(x, go_ensembl, by = "ensembl_gene_id") 
+
+```
+
+```{r}
+
+term_ensembl <- AnnotationDbi::select(
+  GO.db,
+  keys = go_x$GO_id,
+  keytype = "GOID",
+  columns = c("GOID", "TERM")
+)
+
+```
+
+```{r}
+
+term_ensembl <- term_ensembl %>% 
+  drop_na(TERM) %>% 
+  distinct(GOID, TERM) %>% 
+  dplyr::rename(GO_id = GOID, GO_term = TERM)
+  
+```
+
+```{r}
+
+go_x <- full_join(go_x, term_ensembl, by = "GO_id") 
+
+```
+
+```{r}
+
+map(go_x, ~sum(is.na(.)))
+
+```
+
+```{r}
+
+sum(duplicated(go_x))
+
+```
+
+Adding the GO IDs and descriptions creates a large number of entries per individual gene, as multiple ontologies are assigned to each. As such, I will filter by kinase activity to reduce the number of observations.
+
+```{r}
+
+go_x <- go_x %>% 
+  filter(grepl("kinase activity", GO_term, fixed = TRUE)) 
+  
+```
+
+```{r}
+
+go_x %>% 
+  distinct(hgnc_symbol) # 640
+
+```
+
+I will now remove entries for regulation and activation of kinase activity.
+
+```{r}
+
+go_x <- go_x %>% 
+  filter(!grepl("regulation", GO_term, fixed = TRUE)) %>% 
+  filter(!grepl("activation", GO_term, fixed = TRUE)) 
+  
+```
+
+```{r}
+
+go_x %>% 
+  distinct(ensembl_gene_id) #638
+
+```
+
+```{r}
+
+go_x %>% 
+  distinct(hgnc_symbol) #621
+
+```
+
+This results in a dataset with 621 unique genes (648 Ensembl IDs) classified as having kinase activity.
+
+
+
+### Add gene name 'aliases'
+
+To finalise the dataset, I will add a column which contains all possible gene names for each gene (based on HGNC symbol) and remove
+the gene_name column. This will allow for searching of all possible gene names for a kinase within the dataset, without requiring multiple entries for each possible gene name. 
+
+```{r}
+
+x_aliases <- AnnotationDbi::select(
+  org.Hs.eg.db,
+  keys = go_x$hgnc_symbol,
+  keytype = "SYMBOL",
+  columns = c("SYMBOL", "ALIAS")
+)
+
+```
+
+Check all symbols have been accounted for...
+
+```{r}
+
+x_aliases %>% 
+  filter(x_aliases$SYMBOL %in% go_x$hgnc_symbol) %>% 
+  distinct(SYMBOL) #621
+
+```
+
+# Amalgamate all possible gene names into one observation
+
+```{r}
+
+x_aliases <- aggregate(ALIAS ~ SYMBOL, data = x_aliases, paste, collapse = ", ") %>% 
+  dplyr::rename(hgnc_symbol = SYMBOL, alternative_gene_names = ALIAS)
+
+```
+
+# Add alternative names to dataset
+
+```{r}
+
+kinases_final <- full_join(go_x, x_aliases) 
+
+```
+
+```{r}
+
+kinases_final <- kinases_final %>% 
+  dplyr::select(-gene_name)
+
+```
+
+```{r}
+
+sum(duplicated(kinases_final))
+
+```
+	
+```{r}
+
+kinases_final <- unique(kinases_final)
+
+```
+
+```{r}
+
+kinases_final %>% 
+  distinct(ensembl_gene_id) #638
+
+```
+
+```{r}
+
+kinases_final %>% 
+  distinct(hgnc_symbol) #620
+```
+	
+```{r}
+
+kinases_final <- kinases_final %>% 
+  dplyr::select(hgnc_symbol, entrezgene_id, ensembl_gene_id, hgnc_id, uniprot_gn_id, GO_id, GO_term, description, alternative_gene_names) %>% 
+  dplyr::rename(HGNC_Name = hgnc_symbol, Entrez_Gene_ID = entrezgene_id, Ensembl_Gene_ID = ensembl_gene_id, HGNC_ID = hgnc_id, Uniprot_ID = uniprot_gn_id, Gene_Ontology_ID = GO_id, Gene_Ontology_Term = GO_term, Description = description, Alternative_Gene_Names = alternative_gene_names)
+
+```
+
+The final dataset includes five unique identifiers per gene (HGNC name and ID, Entrez, Ensembl and Uniprot) plus Gene Ontology IDs and definitions (term), a description and all alternative names assigned to the gene. There are 620 unique gene names listed mapped to a total of 648 Ensembl gene IDs.
+
+### FINAL DATASET
+
+```{r}
+
+kinases_final
+
+```
+
+### UPDATE: February 2021
+
+Following later analysis, several IDs have been found to be incorrect and so need to be removed from the dataset or updated.
+
+# Remove incorrectly labelled genes
+
+```{r}
+
+kinases_update <- kinases_final %>% 
+  dplyr::filter(!c(HGNC_Name == "PDXK" & Entrez_Gene_ID == 105372824)) %>% 
+  dplyr::filter(!c(HGNC_Name == "CKMT1B" & Entrez_Gene_ID == 548596)) %>% 
+  dplyr::filter(!c(HGNC_Name == "SGK3" & Entrez_Gene_ID == 100533105)) %>% 
+  dplyr::filter(!c(HGNC_Name == "CKMT1A" & Entrez_Gene_ID == 1159)) %>% 
+  dplyr::filter(!c(HGNC_Name == "C8orf44-SGK3" & Entrez_Gene_ID == 23678))
+
+```
+
+# Manually correct GSAP ID
+
+```{r}
+
+kinases_update[kinases_update$HGNC_Name == "GSAP", "Entrez_Gene_ID"] <- "54103"
+
+```
+
+# Manual check of duplicated Ensembl IDs
+
+```{r}
+
+ensembl_dupes <- kinases_update %>% 
+  dplyr::select(Ensembl_Gene_ID, HGNC_Name) %>% 
+  unique() %>%
+  dplyr::select(HGNC_Name) %>% 
+  get_dupes() %>% 
+  distinct() %>% 
+  dplyr::select(HGNC_Name)
+
+```
+
+```{r}
+
+ensembl_dupes_list <- kinases_update %>% 
+  dplyr::select(Ensembl_Gene_ID, HGNC_Name) %>% 
+  distinct() %>% 
+  filter(HGNC_Name %in% ensembl_dupes$HGNC_Name) %>% 
+  arrange(HGNC_Name)
+
+```
+
+```{r}
+
+#write.csv(ensembl_dupes_list, here::here("Output/ensembl_dupes_list.csv"))
+
+```
+
+```{r}
+
+ensembl_remove <- read_csv(here::here("Output/ensembl_dupes_remove.csv")) 
+
+```
+
+```{r}
+
+kinases_update %>% 
+  filter(!Ensembl_Gene_ID %in% ensembl_remove$Ensembl_Gene_ID) %>% 
+  dplyr::select(HGNC_Name, Ensembl_Gene_ID) %>% #620, 619 (there is still one duplicated Ensembl ID)
+  distinct() %>% 
+  get_dupes(Ensembl_Gene_ID) # GSAP incorrectly labelled with the NRBP2 ID so will remove from dataset (GSAP does not have kinase activity so should not be in the dataset; GSAP is a protease)
+
+```
+
+```{r}
+
+kinases_update %>% 
+  filter(!Ensembl_Gene_ID %in% ensembl_remove$Ensembl_Gene_ID) %>% 
+  filter(!HGNC_Name == "GSAP") %>% 
+  dplyr::select(HGNC_Name, Ensembl_Gene_ID) %>% 
+  distinct() # 619 - dataset now contains only correctly annotated genes
+
+```
+
+```{r}
+
+kinases_update <- kinases_update %>% 
+  filter(!Ensembl_Gene_ID %in% ensembl_remove$Ensembl_Gene_ID) %>% 
+  filter(!HGNC_Name == "GSAP")
+
+```
+
+# Save updated list as CSV
+
+```{r}
+
+#write.csv(kinases_update, here::here("Output/kinases_update.csv"))
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+	
+	

@@ -1,0 +1,394 @@
+---
+title: "kinase_PCA_FINAL_20210226"
+output: html_notebook
+---
+
+### Install packages
+
+```{r}
+
+#install.packages("janitor")
+#install.packages("ade4")
+#install.packages("GGally")
+#install.packages("factoextra")
+#install.packages("ggfortify")
+
+```
+
+```{r}
+
+#if (!requireNamespace("BiocManager", quietly = TRUE))
+#    install.packages("BiocManager")
+#BiocManager::install(version = "3.12")
+
+```
+
+
+### Load packages
+
+```{r}
+
+library(tidyverse)
+library(here)
+library(janitor)
+library(BiocManager)
+library(ade4)
+library(GGally)
+library(factoextra)
+library(ggfortify)
+library(FactoMineR)
+
+```
+
+```{r}
+
+here::here()
+
+```
+
+### Load data
+
+```{r}
+
+ccle <- read.csv(here::here("Output/CCLE_kinases_v2.csv"))
+
+class(ccle)
+
+```
+
+### Tidy data
+
+```{r}
+
+ccle_cell_line <- ccle %>% 
+  dplyr::select(-c(X, gene_id_full, transcript_ids)) %>% 
+  dplyr::rename(Ensembl_Gene_ID = gene_id) %>% 
+  remove_rownames() %>% 
+  column_to_rownames("hgnc_name") 
+
+```
+
+```{r}
+
+head(ccle_cell_line)
+
+```
+
+
+### Run PCA of all kinases 
+
+# Create principal components for ccle_tidy data
+
+Function *PCA* from package *FactoMineR*
+
+```{r}
+
+pca_ccle <- PCA(ccle_cell_line[ , -1], graph = FALSE)
+
+```
+
+# Create bar plot of ccle PC variance
+
+Use package *factoextra* to extract and visualise the eigenvalues
+
+```{r}
+
+fviz_eig(pca_ccle, addlabels = TRUE)
+
+```
+
+The first two PCs account for around 85% of the variance.
+
+# Plot PCA graph
+
+```{r}
+
+pcaplot_all <- fviz_pca_ind(pca_ccle, label = "none")
+
+```
+
+```{r}
+
+(pcaplot_all_fin <- pcaplot_all +
+  ggtitle("") +
+  xlab("
+       PC1 (79.2%)") +
+  ylab("PC2 (5.6%)") +
+  scale_x_continuous(breaks = seq(-25, 525, 50)) +
+  scale_y_continuous(breaks = seq(-125, 125, 50)) +
+  theme_classic() + 
+  theme(axis.title.x = element_text(size = 16)) +
+  theme(axis.text.x = element_text(size = 14)) +
+  theme(axis.title.y = element_text(size = 16)) +
+  theme(axis.text.y = element_text(size = 14)))
+
+ggsave(here::here("Output/pcaplot_all_fin.png"), width = 20, height = 20, units = "cm")
+
+```
+
+
+I will now look at how much each individual is contributing to the overall dimension of PC1 to determine if there are any outliers to be removed. 
+
+```{r}
+
+fviz_contrib(pca_ccle, choice = "ind", axes = 1, top = 14) 
+
+```
+
+# Remove outliers 
+
+The first four genes in the contributions (%) plot, PKM, NME2, PGK1 and NME1, are shown to contribute the majority of the variation to the dimension and so will be removed from the data to determine if this is masking any underlying structure. 
+
+```{r}
+
+outliers <- c("PKM", "NME2", "PGK1", "NME1")
+
+ccle_no_out <- ccle_cell_line %>% 
+  rownames_to_column() %>% 
+  dplyr::filter(!rowname %in% outliers) %>% 
+  column_to_rownames("rowname")
+
+```
+
+```{r}
+
+pca_noout <- PCA(ccle_no_out[ , -1], graph = FALSE)
+
+```
+
+# Re-run PCA
+
+```{r}
+
+pcaplot_noout <- fviz_pca_ind(pca_noout, label = "none")
+
+```
+
+```{r}
+
+(pcaplot_noout_fin <- pcaplot_noout +
+  ggtitle("") +
+  xlab("
+       PC1 (56%)") +
+  ylab("PC2 (4.6%)") +
+  scale_x_continuous(breaks = seq(-25, 200, 25)) +
+  scale_y_continuous(breaks = seq(-100, 50, 25)) +
+  theme_classic() + 
+  theme(axis.title.x = element_text(size = 16)) +
+  theme(axis.text.x = element_text(size = 14)) +
+  theme(axis.title.y = element_text(size = 16)) +
+  theme(axis.text.y = element_text(size = 14)))
+
+ggsave(here::here("Output/pcaplot_noout_fin.png"), width = 20, height = 20, units = "cm")
+
+```
+
+
+### Separate all cell lines into data frames by tissue type 
+
+# Create vector of cell lines and extract tissue types
+
+```{r}
+
+cell_line <- ccle_cell_line %>% 
+  colnames()
+
+```
+
+```{r}
+
+cell_line[1] <- ""
+
+```
+
+# Create alphabetical list of tissue types
+
+```{r}
+
+tissue <- cell_line[-1] %>% 
+  str_remove("^[A-Z0-9]+_") %>% 
+  unique() %>% 
+  str_sort() %>% 
+  .[-21] #UPDATE: cell_line 21 (small intestine) is the only entry for this tissue type so have removed from data as unable to run PCA by tissue type for single column 
+
+```
+
+```{r}
+
+tissue_list <- as.list(tissue)
+
+```
+
+# Subset dataframe by elements in list
+
+```{r}
+
+tissue_df <- vector(mode = "list", length = length(tissue))
+names(tissue_df) <- tissue
+
+```
+
+```{r}
+
+for (i in tissue) {
+    tissue_df[[i]] <- ccle_cell_line %>% 
+        dplyr::select(contains({{i}}))
+}
+
+```
+
+
+
+### Run PCA by each tissue type
+
+# Acquire principal components by tissue type
+
+```{r}
+
+tissue_comp <- vector(mode = "list", length = length(tissue))
+names(tissue_comp) <- tissue
+
+```
+
+```{r}
+
+for (i in tissue) {
+    tissue_comp[[i]] <- PCA(tissue_df[[i]], graph = FALSE)
+}
+
+```
+
+# Plot variance of PC by tissue type
+
+```{r}
+
+tissue_eig <- vector(mode = "list", length = length(tissue))
+names(tissue_eig) <- tissue
+
+```
+
+```{r}
+
+for (i in tissue) {
+    tissue_eig[[i]] <- fviz_eig(tissue_comp[[i]], addlabels = TRUE)
+}
+
+```
+
+# Run PCA by tissue
+
+```{r}
+
+tissue_pca <- vector(mode = "list", length = length(tissue))
+names(tissue_pca) <- tissue
+
+```
+
+```{r}
+
+for (i in tissue_list) {
+    tissue_pca[[i]] <- fviz_pca_ind(tissue_comp[[i]], label = "none") 
+}
+
+```
+
+```{r}
+
+tissue_pca
+
+```
+
+# Selected plots for inclusion in dissertation
+
+Breast, ovary and skin selected as all have similar number of cell lines included in PCA
+
+```{r}
+
+(pcaplot_breast <- tissue_pca[[4]] +
+  ggtitle("a) Tissue Type: Breast
+          ") +
+  xlab("
+       PC1 (69.9%)") +
+  ylab("PC2 (10.7%)") +
+  scale_x_continuous(breaks = seq(-25, 100, 25)) +
+  scale_y_continuous(breaks = seq(-25, 75, 25)) +
+  theme_classic() + 
+  theme(title = element_text(size = 16)) +
+  theme(axis.title.x = element_text(size = 16)) +
+  theme(axis.text.x = element_text(size = 14)) +
+  theme(axis.title.y = element_text(size = 16)) +
+  theme(axis.text.y = element_text(size = 14)))
+
+ggsave(here::here("Output/pcaplot_breast.png"), width = 20, height = 20, units = "cm")
+
+```
+
+```{r}
+
+(pcaplot_ovary <- tissue_pca[[15]] + 
+  ggtitle("b) Tissue Type: Ovary
+          ") +
+  xlab("
+       PC1 (84.4%)") +
+  ylab("PC2 (4.9%)") +
+  scale_x_continuous(breaks = seq(-25, 100, 25)) +
+  scale_y_continuous(breaks = seq(-30, 30, 10)) +
+  theme_classic() + 
+  theme(title = element_text(size = 16)) +
+  theme(axis.title.x = element_text(size = 16)) +
+  theme(axis.text.x = element_text(size = 14)) +
+  theme(axis.title.y = element_text(size = 16)) +
+  theme(axis.text.y = element_text(size = 14)))
+
+ggsave(here::here("Output/pcaplot_ovary.png"), width = 20, height = 20, units = "cm")
+
+```
+
+```{r}
+
+(pcaplot_skin <- tissue_pca[[20]] + 
+  ggtitle("c) Tissue Type: Skin
+          ") +
+  xlab("
+       PC1 (91.1%)") +
+  ylab("PC2 (2.6%)") +
+  scale_x_continuous(breaks = seq(-25, 150, 25)) +
+  scale_y_continuous(breaks = seq(-20, 20, 10)) +
+  theme_classic() + 
+  theme(title = element_text(size = 16)) +
+  theme(axis.title.x = element_text(size = 16)) +
+  theme(axis.text.x = element_text(size = 14)) +
+  theme(axis.title.y = element_text(size = 16)) +
+  theme(axis.text.y = element_text(size = 14)))
+
+ggsave(here::here("Output/pcaplot_skin.png"), width = 20, height = 20, units = "cm")
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

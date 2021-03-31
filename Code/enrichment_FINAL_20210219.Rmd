@@ -1,0 +1,2267 @@
+---
+title: "enrichment_FINAL_20210219"
+output: html_notebook
+---
+
+### Install packages
+
+```{r}
+
+#install.packages("rlist")
+
+#BiocManager::install("Rgraphviz")
+
+#install.packages("splitstackshape")
+
+#install.packages("pdftools")
+
+```
+
+### Load packages
+
+```{r}
+
+library(tidyverse)
+library(here)
+library(rlist)
+library(Rgraphviz)
+library(GO.db)
+library(splitstackshape)
+library(gridExtra)
+library(pdftools)
+
+```
+
+### Load data
+
+# CCLE
+
+```{r}
+
+ccle <- read.csv(here::here("Output/CCLE_kinases_v2.csv"))
+
+class(ccle)
+
+```
+
+# Inhibition data - cell lines
+
+```{r}
+
+inh_cell <- read.csv(here::here("Data/IC50_data.csv"))
+
+```
+
+# Inhibition data - genes
+
+```{r}
+
+inh_kinase <- read.csv(here::here("Data/inhibition_data.csv"))
+
+```
+
+# Tidy data
+
+```{r}
+
+ccle_tidy <- ccle %>% 
+  dplyr::select(-c(X, gene_id_full, transcript_ids, HUTU80_SMALL_INTESTINE)) %>% # see comment at line 101 of kinase_PCA
+  dplyr::rename(Ensembl_Gene_ID = gene_id) 
+
+```
+
+```{r}
+
+colnames(inh_cell)[1] <- gsub('^...','',colnames(inh_cell)[1])
+  
+```
+
+```{r}
+
+colnames(inh_kinase)[1] <- gsub('^...','',colnames(inh_kinase)[1])
+
+```
+
+```{r}
+
+colnames(inh_cell)[2:9] <- gsub('^..','',colnames(inh_cell)[2:9])
+
+```
+
+As some of the cell lines and kinase names have punctuation/descriptors that will prevent accurate filtering and selection, I will need to tidy the data. I will also use the alternate gene names stored in the original kinases dataset to search for any names not found in the CCLE dataset (eg "p38a MAPK"). If kinases still cannot be traced then I will conduct a manual search.
+
+```{r}
+
+inh_cell_tidy <- inh_cell %>% 
+  mutate(cell_line_tidy = str_replace_all(cell_line_name, "-1", "1")) %>% 
+  dplyr::select(cell_line_tidy, everything()) %>% 
+  dplyr::select(-cell_line_name) %>% 
+  dplyr::rename(cell_line = cell_line_tidy)
+
+```
+
+```{r}
+
+inh_kinase_tidy <- inh_kinase %>% 
+  mutate(kinase_tidy = str_replace_all(kinase_name, " \\(hum\\)", "")) %>% 
+  mutate(kinase_tidy = str_replace_all(kinase_tidy, "-Cyclin [A-Z]+[0-9]+", "")) %>% 
+  mutate(kinase_tidy = str_replace_all(kinase_tidy, "-Cyclin [A-Z]+", "")) %>% 
+  mutate(kinase_tidy = str_replace_all(kinase_tidy, "-", "")) %>% 
+  mutate(kinase_tidy = str_replace_all(kinase_tidy, " ", "")) %>% 
+  dplyr::select(kinase_tidy, everything())
+
+```
+
+I will now use the tidy dataset to acquire HGNC names for each kinase.
+
+# Acquire HGNC names for each kinase
+
+```{r}
+
+keep_names <- inh_kinase_tidy %>% 
+  dplyr::select(kinase_tidy) %>% 
+  filter(kinase_tidy %in% ccle_tidy$hgnc_name) %>% 
+  unique() %>%                                      #71  
+  dplyr::rename(kinase_name = kinase_tidy) %>% 
+  mutate(hgnc_name = kinase_name) # df ready for binding to remaining alt names once resolved
+
+```
+
+```{r}
+
+search_names <- inh_kinase_tidy %>% 
+  dplyr::select(kinase_tidy) %>% 
+  filter(!kinase_tidy %in% ccle_tidy$hgnc_name) %>% 
+  unique() #69
+
+```
+
+71 names are labelled by their HGNC name in the inhibition dataset. I now need to resolve the remaining 69 names to finish tidying the data.
+
+# Search for HGNC names by alternatively labelled kinases in the inhibition dataset
+
+```{r}
+
+kin <- read.csv(here::here("Output/kinases_update.csv"))
+
+kin <- kin %>% 
+  dplyr::rename(hgnc_name = HGNC_Name)
+
+```
+
+```{r}
+
+search_names <- search_names[, 1]
+
+```
+
+```{r}
+
+alt_names <- vector(mode = "list", length = length(search_names))
+names(alt_names) <- search_names
+alt_names$search_names <- NA 
+
+
+```
+
+```{r}
+
+#for (i in 1:length(search_names)) {
+ # alt_names[[i]] <- kin %>% 
+   # dplyr::select(hgnc_name, Alternative_Gene_Names) %>% 
+   # dplyr::filter(str_detect(Alternative_Gene_Names, search_names[[i]])) %>%
+   # unique() %>% 
+   # mutate(kinase_name = search_names[[i]]) %>% 
+   # dplyr::select(kinase_name, hgnc_name)
+#}
+
+```
+
+```{r}
+
+# alt_list <- reshape::merge_all(alt_names)
+
+```
+
+Unfortunately, automation of this step is unfeasible as partial string matches are retrieving unrelated kinases from the dataset. As such, a manual check of each retrieved gene is necessary. Also, some names are not being found in the dataset as the alternative gene name is not present. As such, a manual search will also be necessary for these kinases. 
+
+# Find any kinase not retrieved from the kinase dataset
+
+```{r}
+
+#found_names <- alt_list %>% 
+ # dplyr::select(kinase_name) %>% 
+ # unique() #2
+
+```
+
+```{r}
+
+#no_name <- data.frame(search_names) %>% 
+ # filter(!search_names %in% found_names$kinase_name) #67
+
+```
+
+```{r}
+
+#no_name <- no_name %>% 
+ # dplyr::rename(kinase_name = search_names) %>% 
+ # mutate(hgnc_name = "") # ready to bind to retrieved names for manual search
+
+```
+
+```{r}
+
+#alt_list <- rbind(alt_list, no_name)
+
+```
+
+# Create .csv file of all kinases retrieved from the dataset and all all unresolved kinases ready for manual search
+
+```{r}
+
+#write.csv(alt_list, here::here("Output/alt_list.csv"))
+
+```
+
+### Manual search of the kinases completed
+
+# Input updated list of original kinase names and resolved HGNC name for all kinases in the inhibition dataset
+
+```{r}
+
+alt_keep <- read.csv(here::here("Output/alt_list_keep.csv"))
+
+alt_keep <- alt_keep %>% 
+  dplyr::rename(hgnc_name = HGNC_Name)
+
+```
+
+# Bind resolved kinases to keep_names dataframe
+
+```{r}
+
+inh_kinase_hgnc <- rbind(keep_names, alt_keep)
+
+```
+
+# Join HGNC data to kinase inhibition data so each entry is associated to the correct HGNC name 
+
+```{r}
+
+inh_kinase_tidy <- inh_kinase_tidy %>% 
+  dplyr::rename(kinase_name_orig = kinase_name, kinase_name = kinase_tidy) 
+
+```
+
+```{r}
+
+inh_kinase_all <- full_join(inh_kinase_tidy, inh_kinase_hgnc, by = "kinase_name") %>% 
+  dplyr::select(hgnc_name, kinase_name, everything()) %>% 
+  dplyr::select(-kinase_name_orig)
+
+```
+
+# Add Ensembl Gene ID data
+
+```{r}
+
+inh_kinase_all <- ccle_tidy %>% 
+  dplyr::filter(hgnc_name %in% inh_kinase_all$hgnc_name) %>% 
+  dplyr::select(hgnc_name, Ensembl_Gene_ID) %>% 
+  full_join(inh_kinase_all)
+
+```
+
+```{r}
+
+#write.csv(inh_kinase_all, here::here("Output/inh_kinase_all.csv"))
+
+```
+
+# Separate kinase inhibition data into Zinc and Copper inhibited sets
+
+```{r}
+
+inh_kinase_zn <- inh_kinase_all %>% 
+  filter(compound == "Zn")
+
+```
+
+```{r}
+
+inh_kinase_cu <- inh_kinase_all %>% 
+  filter(compound == "Cu")
+
+```
+
+# Generate table of sample inhibition data for dissertation
+
+```{r}
+
+#(inh_kinase_table <- inh_kinase_all %>% 
+ # dplyr::filter(!is.na(Ensembl_Gene_ID)) %>% 
+ # dplyr::select(-c(activity_perc_at_10ug, stdev, kinase_name)) %>% 
+ # slice_sample(., n = 25) %>% 
+ # arrange(desc(perc_inhibition)) %>% 
+ # dplyr::rename("HGNC Name" = hgnc_name, "Ensembl ID" = Ensembl_Gene_ID, "Inhibition (%)" = perc_inhibition, Compound = compound))
+
+```
+
+```{r}
+
+#write.csv(inh_kinase_table, here::here("Output/inh_kinase_table.csv"))
+
+```
+
+```{r}
+
+inh_kinase_table <- read.csv(here::here("Output/inh_kinase_table.csv")) %>% 
+  dplyr::rename("HGNC Name" = HGNC.Name, "Ensembl ID" = Ensembl.ID, "Inhibition (%)" = Inhibition....)
+
+```
+
+```{r}
+
+inh_kinase_table
+
+```
+
+
+
+
+
+### ENRICHMENT ANALYSIS - METASCAPE
+
+```{r}
+
+#install.packages("qpcR")
+#install.packages("htmltools")
+
+```
+
+```{r}
+
+library(htmltools)
+library(rgl)
+library(qpcR)
+
+```
+
+### Filter most/least inhibited and activated kinases - Copper
+
+# Top 25 inhibited - Cu
+
+```{r}
+
+top25_cu <- inh_kinase_cu %>% 
+  dplyr::slice_max(perc_inhibition, n = 25, with_ties = FALSE)
+
+```
+
+```{r}
+
+top_cu <- inh_kinase_cu %>% 
+  dplyr::filter(perc_inhibition >= 90)
+
+```
+
+# Bottom 25 inhibited - Cu
+
+```{r}
+
+bottom25_cu <- inh_kinase_cu %>% 
+  dplyr::filter(perc_inhibition >=0) %>% 
+  dplyr::slice_min(perc_inhibition, n = 25, with_ties = FALSE)
+
+```
+
+```{r}
+
+bottom_cu <- inh_kinase_cu %>% 
+  dplyr::filter(perc_inhibition >=0) %>% 
+  dplyr::filter(perc_inhibition <= 10)
+
+```
+
+# Activated - Cu
+
+```{r}
+
+activ_cu <- inh_kinase_cu %>% 
+  dplyr::filter(perc_inhibition < 0) %>% 
+  dplyr::arrange(perc_inhibition)
+
+```
+
+### Filter most/least inhibited and activated kinases - Zinc
+
+# Top 25 inhibited - Zn
+
+```{r}
+
+top25_zn <- inh_kinase_zn %>% 
+  dplyr::slice_max(perc_inhibition, n = 25, with_ties = FALSE)
+
+```
+
+```{r}
+
+top_zn <- inh_kinase_zn %>% 
+  dplyr::filter(perc_inhibition >= 90)
+
+```
+
+# Bottom 25 inhibited - Zn
+
+```{r}
+
+bottom25_zn <- inh_kinase_zn %>% 
+  dplyr::filter(perc_inhibition >=0) %>% 
+  dplyr::slice_min(perc_inhibition, n = 25, with_ties = FALSE)
+
+```
+
+```{r}
+
+bottom_zn <- inh_kinase_zn %>% 
+  dplyr::filter(perc_inhibition >=0) %>% 
+  dplyr::filter(perc_inhibition <= 10)
+
+```
+
+# Activated - Zn
+
+```{r}
+
+activ_zn <- inh_kinase_zn %>% 
+  dplyr::filter(perc_inhibition < 0) %>% 
+  dplyr::arrange(perc_inhibition)
+
+```
+
+
+### Write csv files for top and bottom 25 inhibited kinases for copper and zinc to pass to Metascape
+
+```{r}
+
+# All inhibited kinases
+
+#allinh_hgnc <- qpcR:::cbind.na(kin_hgnc_distinct, inh_kinase_cu$hgnc_name) %>% 
+ # dplyr::rename("_BACKGROUND" = hgnc_name, "inh_kin" = y)
+
+#write.csv(allinh_hgnc, here::here("Output/allinh_hgnc.csv"))
+
+# Top 25 - Cu
+
+#top25_cu_hgnc <- qpcR:::cbind.na(kin_hgnc_distinct, top25_cu$hgnc_name) %>% 
+ # dplyr::rename("_BACKGROUND" = hgnc_name, "inh_kin" = y)
+
+#write.csv(top25_cu_hgnc, here::here("Output/top25_cu_hgnc.csv"))
+
+# Bottom 25 - Cu
+
+#bottom25_cu_hgnc <- qpcR:::cbind.na(kin_hgnc_distinct, bottom25_cu$hgnc_name) %>% 
+ # dplyr::rename("_BACKGROUND" = hgnc_name, "inh_kin" = y)
+
+#write.csv(bottom25_cu_hgnc, here::here("Output/bottom25_cu_hgnc.csv"))
+
+# Top 25 - Zn
+
+#top25_zn_hgnc <- qpcR:::cbind.na(kin_hgnc_distinct, top25_zn$hgnc_name) %>% 
+ # dplyr::rename("_BACKGROUND" = hgnc_name, "inh_kin" = y)
+
+#write.csv(top25_zn_hgnc, here::here("Output/top25_zn_hgnc.csv"))
+
+# Bottom 25 - Zn
+
+#bottom25_zn_hgnc <- qpcR:::cbind.na(kin_hgnc_distinct, bottom25_zn$hgnc_name) %>% 
+#  dplyr::rename("_BACKGROUND" = hgnc_name, "inh_kin" = y)
+
+#write.csv(bottom25_zn_hgnc, here::here("Output/bottom25_zn_hgnc.csv"))
+
+# Activated - Cu
+
+#activ_cu_hgnc <- qpcR:::cbind.na(kin_hgnc_distinct, activ_cu$hgnc_name) %>% 
+ # dplyr::rename("_BACKGROUND" = hgnc_name, "inh_kin" = y)
+
+#write.csv(activ_cu_hgnc, here::here("Output/activ_cu_hgnc.csv"))
+
+# Activated - Zn
+
+#activ_zn_hgnc <- qpcR:::cbind.na(kin_hgnc_distinct, activ_zn$hgnc_name) %>% 
+ # dplyr::rename("_BACKGROUND" = hgnc_name, "inh_kin" = y)
+
+#write.csv(activ_zn_hgnc, here::here("Output/activ_zn_hgnc.csv"))
+
+```
+
+
+
+### ENRICHMENT ANALYSIS - Top GO
+
+# Install topGO package
+
+```{r}
+
+#if (!requireNamespace("BiocManager", quietly = TRUE))
+ #   install.packages("BiocManager")
+
+#BiocManager::install("topGO")
+
+```
+
+# Load topGO
+
+```{r}
+
+library(topGO)
+
+```
+
+### Create topGO data object
+
+# Install VISEAGO package
+
+```{r}
+
+#BiocManager::install("ViSEAGO")
+
+```
+
+# Load ViSEAGO package
+
+```{r}
+
+library(ViSEAGO)
+
+```
+
+Analysis 1 - compare all inhibited kinases against all background genes (all human kinases)
+
+Analysis 1.1 Molecular Function
+
+### Build topGO data object
+
+# Create custom annotations
+
+```{r}
+
+#ens2GO <- kinases_final %>% 
+ # dplyr::select(Ensembl_Gene_ID, Gene_Ontology_ID) %>% 
+ # dplyr::filter(Ensembl_Gene_ID %in% ccle_tidy$Ensembl_Gene_ID) %>% 
+ # unique() 
+
+```
+
+```{r}
+
+#ens2GO %>% 
+ # distinct(Ensembl_Gene_ID) #616
+
+```
+
+```{r}
+
+#write_tsv(ens2GO, here::here("Output/ens2GO.txt"))
+
+```
+
+```{r}
+
+#ensID2GO <- readMappings(file = here::here("Output/ens2GO.txt")) 
+
+```
+
+# Create GO db for genes in universe
+
+NB: 'Namespace_1003' denotes the ontology that the ID originates from - biological process, cellular compartment or molecular function
+
+```{r}
+
+db <- biomaRt::useMart('ENSEMBL_MART_ENSEMBL', dataset = 'hsapiens_gene_ensembl', host = "www.ensembl.org")
+
+go_ids <- biomaRt::getBM(attributes = c('go_id', 'ensembl_gene_id', 'namespace_1003'), filters ='ensembl_gene_id', values = ccle_tidy$Ensembl_Gene_ID, mart = db)
+
+```
+
+# Create GO annotations for all genes in the universe 
+
+Empty cells needs to be removed first to prevent issues with missing values in the analysis. To do this I will convert the missing values to NAs and then drop the NAs
+
+```{r}
+
+go_ids <- go_ids %>% 
+  mutate_all(na_if,"")
+
+```
+
+```{r}
+
+sum(is.na(go_ids))
+
+```
+
+```{r}
+
+go_ids <- drop_na(go_ids)
+
+```
+
+```{r}
+
+kin2GO <- unstack(go_ids[,c(1,2)])
+
+```
+
+# Create object of genes of interest (candidates) against background (universe) 
+
+```{r}
+
+inh_ens <- as.data.frame(inh_kinase_cu$Ensembl_Gene_ID) %>% 
+  dplyr::rename(Ensembl_Gene_ID = "inh_kinase_cu$Ensembl_Gene_ID")
+
+all_ens <- as.data.frame(ccle_tidy$Ensembl_Gene_ID) %>% 
+  dplyr::rename(Ensembl_Gene_ID = "ccle_tidy$Ensembl_Gene_ID")
+
+```
+
+```{r}
+
+allinh_factors <- factor(as.integer(all_ens$Ensembl_Gene_ID %in% inh_ens$Ensembl_Gene_ID))
+
+names(allinh_factors) <- all_ens$Ensembl_Gene_ID
+
+```
+
+```{r}
+
+str(allinh_factors)
+
+```
+
+# Build topGO data object
+
+```{r}
+
+options(scipen = 999) # prevents creation of exponentials in topGO result (allows p-values to be transformed with -log10 for dataviz)
+
+```
+
+
+```{r}
+
+topGO_allinh_MF <- new(Class = "topGOdata", ontology = "MF", allGenes = allinh_factors, annot = annFUN.gene2GO, gene2GO = kin2GO)
+
+```
+
+```{r}
+
+graph(topGO_allinh_MF)
+
+```
+
+```{r}
+
+sg <- sigGenes(topGO_allinh_MF)
+
+str(sg)
+
+numSigGenes(topGO_allinh_MF)
+
+```
+
+# Run Fisher's exact test (classic)
+
+```{r}
+
+allinh_MF_fisher <- runTest(topGO_allinh_MF, algorithm = "classic", statistic = "fisher")
+
+```
+
+```{r}
+
+allinh_MF_fisher
+
+```
+
+```{r}
+
+allinh_MF_res <- GenTable(topGO_allinh_MF, classicFisher = allinh_MF_fisher, orderBy = "allinh_MF_fisher", ranksOf = "classicFisher", topNodes = 10)
+
+```
+
+```{r}
+
+allinh_MF_res
+
+```
+
+# Plot data
+
+```{r}
+
+showSigOfNodes(topGO_allinh_MF, score(allinh_MF_fisher), firstSigNodes = 5, useInfo = "none")
+
+printGraph(topGO_allinh_MF, allinh_MF_fisher, firstSigNodes = 5, fn.prefix = here::here("Output/tGO_MF_all"), useInfo = "none", pdfSW = TRUE)
+
+```
+
+# Run Fisher's exact test (weighted)
+
+```{r}
+
+allinh_MF_fisher_2 <- runTest(topGO_allinh_MF, algorithm = "weight01", statistic = "fisher")
+
+```
+
+```{r}
+
+allinh_MF_fisher_2
+
+```
+
+```{r}
+
+allinh_MF_res_2 <- GenTable(topGO_allinh_MF, weightFisher = allinh_MF_fisher_2, orderBy = "allinh_MF_fisher_2", ranksOf = "weightFisher", topNodes = 100)
+
+```
+
+```{r}
+
+allinh_MF_res_2
+
+```
+
+# Plot data
+
+```{r}
+
+showSigOfNodes(topGO_allinh_MF, score(allinh_MF_fisher_2), firstSigNodes = 5, useInfo = "none")
+
+printGraph(topGO_allinh_MF, allinh_MF_fisher_2, firstSigNodes = 5, fn.prefix = here::here("Output/tGO_MF_all"), useInfo = "none", pdfSW = TRUE)
+
+```
+
+```{r}
+
+pdf_convert(here::here("Output/tGO_MF_all_weight01_5_none.pdf"), page = 1, filenames = here::here("Output/allMF_nodes.png"))
+
+```
+
+Analysis 1.2 - Biological Process
+
+### Build topGO data object
+
+# Create object of genes of interest (candidates) against background (universe) 
+
+```{r}
+
+inh_ens <- as.data.frame(inh_kinase_cu$Ensembl_Gene_ID) %>% 
+  dplyr::rename(Ensembl_Gene_ID = "inh_kinase_cu$Ensembl_Gene_ID")
+
+all_ens <- as.data.frame(ccle_tidy$Ensembl_Gene_ID) %>% 
+  dplyr::rename(Ensembl_Gene_ID = "ccle_tidy$Ensembl_Gene_ID")
+
+```
+
+```{r}
+
+allinh_factors <- factor(as.integer(all_ens$Ensembl_Gene_ID %in% inh_ens$Ensembl_Gene_ID))
+
+names(allinh_factors) <- all_ens$Ensembl_Gene_ID
+
+```
+
+```{r}
+
+str(allinh_factors)
+
+```
+
+# Build topGO data object
+
+```{r}
+
+topGO_allinh_BP <- new(Class = "topGOdata", ontology = "BP", allGenes = allinh_factors, annot = annFUN.gene2GO, gene2GO = kin2GO)
+
+```
+
+```{r}
+
+graph(topGO_allinh_BP)
+
+```
+
+```{r}
+
+sg <- sigGenes(topGO_allinh_BP)
+
+str(sg)
+
+numSigGenes(topGO_allinh_BP)
+
+```
+
+# Run Fisher's exact test (classic)
+
+```{r}
+
+allinh_BP_fisher <- runTest(topGO_allinh_BP, algorithm = "classic", statistic = "fisher")
+
+```
+
+```{r}
+
+allinh_BP_fisher
+
+```
+
+```{r}
+
+allinh_BP_res <- GenTable(topGO_allinh_BP, classicFisher = allinh_BP_fisher, orderBy = "allinh_BP_fisher", ranksOf = "classicFisher", topNodes = 10)
+
+```
+
+
+```{r}
+
+allinh_BP_res
+
+```
+
+# Plot data
+
+```{r}
+
+showSigOfNodes(topGO_allinh_BP, score(allinh_BP_fisher), firstSigNodes = 5, useInfo = "none")
+
+printGraph(topGO_allinh_BP, allinh_BP_fisher, firstSigNodes = 5, fn.prefix = here::here("Output/tGO_BP_all"), useInfo = "none", pdfSW = TRUE)
+
+```
+
+# Run Fisher's exact test (weighted)
+
+```{r}
+
+allinh_BP_fisher_2 <- runTest(topGO_allinh_BP, algorithm = "weight01", statistic = "fisher")
+
+```
+
+```{r}
+
+allinh_BP_fisher_2
+
+```
+
+```{r}
+
+allinh_BP_res_2 <- GenTable(topGO_allinh_BP, weightFisher = allinh_BP_fisher_2, orderBy = "allinh_BP_fisher_2", ranksOf = "weightFisher", topNodes = 100)
+
+```
+
+```{r}
+
+allinh_BP_res_2
+
+```
+
+# Plot data
+
+```{r}
+
+showSigOfNodes(topGO_allinh_BP, score(allinh_BP_fisher_2), firstSigNodes = 5, useInfo = "none")
+
+printGraph(topGO_allinh_BP, allinh_BP_fisher_2, firstSigNodes = 5, fn.prefix = here::here("Output/tGO_BP_all"), useInfo = "none", pdfSW = TRUE)
+
+```
+
+```{r}
+
+pdf_convert(here::here("Output/tGO_BP_all_weight01_5_none.pdf"), page = 1, filenames = here::here("Output/allBP_nodes.png"))
+
+```
+
+Analysis 2: Enrichment of inhibited kinases by molecular function - Cu and Zn
+
+Analysis 2.1: Enrichment of most inhibited kinases - Cu and Zn
+
+### Most inhibited - Cu
+
+# Create factor object showing which genes are of interest
+
+```{r}
+
+top25_cu_list <- factor(as.integer(all_ens$Ensembl_Gene_ID %in% top25_cu$Ensembl_Gene_ID))
+
+names(top25_cu_list) <- all_ens$Ensembl_Gene_ID
+
+```
+
+# Build topGO data object
+
+```{r}
+
+topGO_topcu_MF <- new(Class = "topGOdata", ontology = "MF", allGenes = top25_cu_list, annot = annFUN.gene2GO, gene2GO = kin2GO)
+
+```
+
+```{r}
+
+graph(topGO_topcu_MF)
+
+```
+
+```{r}
+
+topcu_sg_MF <- sigGenes(topGO_topcu_MF)
+
+str(topcu_sg_MF)
+
+```
+
+```{r}
+
+numSigGenes(topGO_topcu_MF)
+
+```
+
+# Run Fisher's exact test
+
+```{r}
+
+topcu_MF_fisher <- runTest(topGO_topcu_MF, algorithm = "weight01", statistic = "fisher")
+
+```
+
+```{r}
+
+topcu_MF_res <- GenTable(topGO_topcu_MF, weightFisher = topcu_MF_fisher, orderBy = "topcu_MF_fisher", ranksOf = "weightFisher", topNodes = 10)
+
+```
+
+```{r}
+
+topcu_MF_res
+
+```
+
+# Plot data
+
+```{r}
+
+showSigOfNodes(topGO_topcu_MF, score(topcu_MF_fisher), firstSigNodes = 5, useInfo = "none")
+
+printGraph(topGO_topcu_MF, topcu_MF_fisher, firstSigNodes = 5, fn.prefix = here::here("Output/tGO_MF_tCu"), useInfo = "none", pdfSW = TRUE)
+
+```
+
+```{r}
+
+pdf_convert(here::here("Output/tGO_MF_tCu_weight01_5_none.pdf"), page = 1, filenames = here::here("Output/tCuMF_nodes.png"))
+
+```
+
+### Most inhibited - Zn
+
+# Create factor object showing which genes are of interest
+
+```{r}
+
+top25_zn_list <- factor(as.integer(all_ens$Ensembl_Gene_ID %in% top25_zn$Ensembl_Gene_ID))
+
+names(top25_zn_list) <- all_ens$Ensembl_Gene_ID
+
+```
+
+# Build topGO data object
+
+```{r}
+
+topGO_topzn_MF <- new(Class = "topGOdata", ontology = "MF", allGenes = top25_zn_list, annot = annFUN.gene2GO, gene2GO = kin2GO)
+
+```
+
+```{r}
+
+graph(topGO_topzn_MF)
+
+```
+
+```{r}
+
+topzn_sg_MF <- sigGenes(topGO_topzn_MF)
+
+str(topzn_sg_MF)
+
+```
+
+```{r}
+
+numSigGenes(topGO_topzn_MF)
+
+```
+
+# Run Fisher's exact test
+
+```{r}
+
+topzn_MF_fisher <- runTest(topGO_topzn_MF, algorithm = "weight01", statistic = "fisher")
+
+```
+
+```{r}
+
+topzn_MF_res <- GenTable(topGO_topzn_MF, weightFisher = topzn_MF_fisher, orderBy = "topzn_MF_fisher", ranksOf = "weightFisher", topNodes = 10)
+
+```
+
+```{r}
+
+topzn_MF_res
+
+```
+
+# Plot data
+
+```{r}
+
+showSigOfNodes(topGO_topzn_MF, score(topzn_MF_fisher), firstSigNodes = 5, useInfo = "none")
+
+printGraph(topGO_topzn_MF, topzn_MF_fisher, firstSigNodes = 5, fn.prefix = here::here("Output/tGO_MF_tZn"), useInfo = "none", pdfSW = TRUE)
+
+```
+
+```{r}
+
+pdf_convert(here::here("Output/tGO_MF_tZn_weight01_5_none.pdf"), page = 1, filenames = here::here("Output/tZnMF_nodes.png"))
+
+```
+
+Analysis 2.2: Enrichment of least inhibited kinases - Cu and Zn
+
+### Least inhibited - Cu
+
+# Create factor object showing which genes are of interest
+
+```{r}
+
+low25_cu_list <- factor(as.integer(all_ens$Ensembl_Gene_ID %in% bottom25_cu$Ensembl_Gene_ID))
+
+names(low25_cu_list) <- all_ens$Ensembl_Gene_ID
+
+```
+
+# Build topGO data object
+
+```{r}
+
+topGO_lowcu_MF <- new(Class = "topGOdata", ontology = "MF", allGenes = low25_cu_list, annot = annFUN.gene2GO, gene2GO = kin2GO)
+
+```
+
+```{r}
+
+graph(topGO_lowcu_MF)
+
+```
+
+```{r}
+
+lowcu_sg_MF <- sigGenes(topGO_lowcu_MF)
+
+str(lowcu_sg_MF)
+
+```
+
+```{r}
+
+numSigGenes(topGO_lowcu_MF)
+
+```
+
+# Run Fisher's exact test
+
+```{r}
+
+lowcu_MF_fisher <- runTest(topGO_lowcu_MF, algorithm = "weight01", statistic = "fisher")
+
+```
+
+```{r}
+
+lowcu_MF_res <- GenTable(topGO_lowcu_MF, weightFisher = lowcu_MF_fisher, orderBy = "lowcu_MF_fisher", ranksOf = "weightFisher", topNodes = 10)
+
+```
+
+```{r}
+
+lowcu_MF_res
+
+```
+
+# Plot data
+
+```{r}
+
+showSigOfNodes(topGO_lowcu_MF, score(lowcu_MF_fisher), firstSigNodes = 5, useInfo = "none")
+
+printGraph(topGO_lowcu_MF, lowcu_MF_fisher, firstSigNodes = 5, fn.prefix = here::here("Output/tGO_MF_lCu"), useInfo = "none", pdfSW = TRUE)
+
+```
+
+```{r}
+
+pdf_convert(here::here("Output/tGO_MF_lCu_weight01_5_none.pdf"), page = 1, filenames = here::here("Output/lCuMF_nodes.png"))
+
+```
+
+### Least inhibited - Zn
+
+# Create factor object showing which genes are of interest
+
+```{r}
+
+low25_zn_list <- factor(as.integer(all_ens$Ensembl_Gene_ID %in% bottom25_zn$Ensembl_Gene_ID))
+
+names(low25_zn_list) <- all_ens$Ensembl_Gene_ID
+
+```
+
+# Build topGO data object
+
+```{r}
+
+topGO_lowzn_MF <- new(Class = "topGOdata", ontology = "MF", allGenes = low25_zn_list, annot = annFUN.gene2GO, gene2GO = kin2GO)
+
+```
+
+```{r}
+
+graph(topGO_lowzn_MF)
+
+```
+
+```{r}
+
+lowzn_sg_MF <- sigGenes(topGO_lowzn_MF)
+
+str(lowzn_sg_MF)
+
+```
+
+```{r}
+
+numSigGenes(topGO_lowzn_MF)
+
+```
+
+# Run Fisher's exact test
+
+```{r}
+
+lowzn_MF_fisher <- runTest(topGO_lowzn_MF, algorithm = "weight01", statistic = "fisher")
+
+```
+
+```{r}
+
+lowzn_MF_res <- GenTable(topGO_lowzn_MF, weightFisher = lowzn_MF_fisher, orderBy = "lowzn_MF_fisher", ranksOf = "weightFisher", topNodes = 10)
+
+```
+
+```{r}
+
+lowzn_MF_res
+
+```
+
+# Plot data
+
+```{r}
+
+showSigOfNodes(topGO_lowzn_MF, score(lowzn_MF_fisher), firstSigNodes = 5, useInfo = "none")
+
+printGraph(topGO_lowzn_MF, lowzn_MF_fisher, firstSigNodes = 5, fn.prefix = here::here("Output/tGO_MF_lZn"), useInfo = "none", pdfSW = TRUE)
+
+```
+
+```{r}
+
+pdf_convert(here::here("Output/tGO_MF_lZn_weight01_5_none.pdf"), page = 1, filenames = here::here("Output/lZnMF_nodes.png"))
+
+```
+
+Analysis 2.3: Enrichment of activated kinases - Cu and Zn
+
+### Activated - Cu
+
+# Create factor object showing which genes are of interest
+
+```{r}
+
+activ_cu_list <- factor(as.integer(all_ens$Ensembl_Gene_ID %in% activ_cu$Ensembl_Gene_ID))
+
+names(activ_cu_list) <- all_ens$Ensembl_Gene_ID
+
+```
+
+# Build topGO data object
+
+```{r}
+
+topGO_activcu_MF <- new(Class = "topGOdata", ontology = "MF", allGenes = activ_cu_list, annot = annFUN.gene2GO, gene2GO = kin2GO)
+
+```
+
+```{r}
+
+graph(topGO_activcu_MF)
+
+```
+
+```{r}
+
+activcu_sg_MF <- sigGenes(topGO_activcu_MF)
+
+str(activcu_sg_MF)
+
+```
+
+```{r}
+
+numSigGenes(topGO_activcu_MF)
+
+```
+
+# Run Fisher's exact test
+
+```{r}
+
+activcu_MF_fisher <- runTest(topGO_activcu_MF, algorithm = "weight01", statistic = "fisher")
+
+```
+
+```{r}
+
+activcu_MF_res <- GenTable(topGO_activcu_MF, weightFisher = activcu_MF_fisher, orderBy = "activcu_MF_fisher", ranksOf = "weightFisher", topNodes = 10)
+
+```
+
+```{r}
+
+activcu_MF_res
+
+```
+
+# Plot data
+
+```{r}
+
+showSigOfNodes(topGO_activcu_MF, score(activcu_MF_fisher), firstSigNodes = 5, useInfo = "none")
+
+printGraph(topGO_activcu_MF, activcu_MF_fisher, firstSigNodes = 5, fn.prefix = here::here("Output/tGO_MF_aCu"), useInfo = "none", pdfSW = TRUE)
+
+```
+
+```{r}
+
+pdf_convert(here::here("Output/tGO_MF_aCu_weight01_5_none.pdf"), page = 1, filenames = here::here("Output/aCuMF_nodes.png"))
+
+```
+
+### Activated - Zn
+
+# Create factor object showing which genes are of interest
+
+```{r}
+
+activ_zn_list <- factor(as.integer(all_ens$Ensembl_Gene_ID %in% activ_zn$Ensembl_Gene_ID))
+
+names(activ_zn_list) <- all_ens$Ensembl_Gene_ID
+
+```
+
+# Build topGO data object
+
+```{r}
+
+topGO_activzn_MF <- new(Class = "topGOdata", ontology = "MF", allGenes = activ_zn_list, annot = annFUN.gene2GO, gene2GO = kin2GO)
+
+```
+
+```{r}
+
+graph(topGO_activzn_MF)
+
+```
+
+```{r}
+
+activzn_sg_MF <- sigGenes(topGO_activzn_MF)
+
+str(activzn_sg_MF)
+
+```
+
+```{r}
+
+numSigGenes(topGO_activzn_MF)
+
+```
+
+# Run Fisher's exact test
+
+```{r}
+
+activzn_MF_fisher <- runTest(topGO_activzn_MF, algorithm = "weight01", statistic = "fisher")
+
+```
+
+```{r}
+
+activzn_MF_res <- GenTable(topGO_activzn_MF, weightFisher = activzn_MF_fisher, orderBy = "activzn_MF_fisher", ranksOf = "weightFisher", topNodes = 10)
+
+```
+
+```{r}
+
+activzn_MF_res
+
+```
+
+# Plot data
+
+```{r}
+
+showSigOfNodes(topGO_activzn_MF, score(activzn_MF_fisher), firstSigNodes = 5, useInfo = "none")
+
+printGraph(topGO_activzn_MF, activzn_MF_fisher, firstSigNodes = 5, fn.prefix = here::here("Output/tGO_MF_aZn"), useInfo = "none", pdfSW = TRUE)
+
+```
+
+```{r}
+
+pdf_convert(here::here("Output/tGO_MF_aZn_weight01_5_none.pdf"), page = 1, filenames = here::here("Output/aZnMF_nodes.png"))
+
+```
+
+Analysis 3: Enrichment of inhibited kinases by biological process - Cu and Zn
+
+Analysis 3.1: Enrichment of most inhibited kinases - Cu and Zn 
+
+### Most inhibited - Cu
+
+# Create factor object showing which genes are of interest
+
+```{r}
+
+top25_cu_list <- factor(as.integer(all_ens$Ensembl_Gene_ID %in% top25_cu$Ensembl_Gene_ID))
+
+names(top25_cu_list) <- all_ens$Ensembl_Gene_ID
+
+```
+
+# Build topGO data object
+
+```{r}
+
+topGO_topcu_BP <- new(Class = "topGOdata", ontology = "BP", allGenes = top25_cu_list, annot = annFUN.gene2GO, gene2GO = kin2GO)
+
+```
+
+```{r}
+
+graph(topGO_topcu_BP)
+
+```
+
+```{r}
+
+topcu_sg_BP <- sigGenes(topGO_topcu_BP)
+
+str(topcu_sg_BP)
+
+```
+
+```{r}
+
+numSigGenes(topGO_topcu_BP)
+
+```
+
+# Run Fisher's exact test
+
+```{r}
+
+topcu_BP_fisher <- runTest(topGO_topcu_BP, algorithm = "weight01", statistic = "fisher")
+
+```
+
+```{r}
+
+topcu_BP_res <- GenTable(topGO_topcu_BP, weightFisher = topcu_BP_fisher, orderBy = "topcu_BP_fisher", ranksOf = "weightFisher", topNodes = 10)
+
+```
+
+```{r}
+
+topcu_BP_res
+
+```
+
+# Plot data
+
+```{r}
+
+showSigOfNodes(topGO_topcu_BP, score(topcu_BP_fisher), firstSigNodes = 5, useInfo = "none")
+
+printGraph(topGO_topcu_BP, topcu_BP_fisher, firstSigNodes = 5, fn.prefix = here::here("Output/tGO_BP_tCu"), useInfo = "none", pdfSW = TRUE)
+
+```
+
+```{r}
+
+pdf_convert(here::here("Output/tGO_BP_tCu_weight01_5_none.pdf"), page = 1, filenames = here::here("Output/tCuBP_nodes.png"))
+
+```
+
+### Most inhibited - Zn
+
+# Create factor object showing which genes are of interest
+
+```{r}
+
+top25_zn_list <- factor(as.integer(all_ens$Ensembl_Gene_ID %in% top25_zn$Ensembl_Gene_ID))
+
+names(top25_zn_list) <- all_ens$Ensembl_Gene_ID
+
+```
+
+# Build topGO data object
+
+```{r}
+
+topGO_topzn_BP <- new(Class = "topGOdata", ontology = "BP", allGenes = top25_zn_list, annot = annFUN.gene2GO, gene2GO = kin2GO)
+
+```
+
+```{r}
+
+graph(topGO_topzn_BP)
+
+```
+
+```{r}
+
+topzn_sg_BP <- sigGenes(topGO_topzn_BP)
+
+str(topzn_sg_BP)
+
+```
+
+```{r}
+
+numSigGenes(topGO_topzn_BP)
+
+```
+
+# Run Fisher's exact test
+
+```{r}
+
+topzn_BP_fisher <- runTest(topGO_topzn_BP, algorithm = "weight01", statistic = "fisher")
+
+```
+
+```{r}
+
+topzn_BP_res <- GenTable(topGO_topzn_BP, weightFisher = topzn_BP_fisher, orderBy = "topzn_BP_fisher", ranksOf = "weightFisher", topNodes = 10)
+
+```
+
+```{r}
+
+topzn_BP_res
+
+```
+
+# Plot data
+
+```{r}
+
+showSigOfNodes(topGO_topzn_BP, score(topzn_BP_fisher), firstSigNodes = 5, useInfo = "none")
+
+printGraph(topGO_topzn_BP, topzn_BP_fisher, firstSigNodes = 5, fn.prefix = here::here("Output/tGO_BP_tZn"), useInfo = "none", pdfSW = TRUE)
+
+```
+
+```{r}
+
+pdf_convert(here::here("Output/tGO_BP_tZn_weight01_5_none.pdf"), page = 1, filenames = here::here("Output/tZnBP_nodes.png"))
+
+```
+
+Analysis 3.2: Enrichment of least inhibited kinases - Cu and Zn
+
+### Least inhibited - Cu
+
+# Create factor object showing which genes are of interest
+
+```{r}
+
+low25_cu_list <- factor(as.integer(all_ens$Ensembl_Gene_ID %in% bottom25_cu$Ensembl_Gene_ID))
+
+names(low25_cu_list) <- all_ens$Ensembl_Gene_ID
+
+```
+
+# Build topGO data object
+
+```{r}
+
+topGO_lowcu_BP <- new(Class = "topGOdata", ontology = "BP", allGenes = low25_cu_list, annot = annFUN.gene2GO, gene2GO = kin2GO)
+
+```
+
+```{r}
+
+graph(topGO_lowcu_BP)
+
+```
+
+```{r}
+
+lowcu_sg_BP <- sigGenes(topGO_lowcu_BP)
+
+str(lowcu_sg_BP)
+
+```
+
+```{r}
+
+numSigGenes(topGO_lowcu_BP)
+
+```
+
+# Run Fisher's exact test
+
+```{r}
+
+lowcu_BP_fisher <- runTest(topGO_lowcu_BP, algorithm = "weight01", statistic = "fisher")
+
+```
+
+```{r}
+
+lowcu_BP_res <- GenTable(topGO_lowcu_BP, weightFisher = lowcu_BP_fisher, orderBy = "lowcu_BP_fisher", ranksOf = "weightFisher", topNodes = 10)
+
+```
+
+```{r}
+
+lowcu_BP_res
+
+```
+
+# Plot data
+
+```{r}
+
+showSigOfNodes(topGO_lowcu_BP, score(lowcu_BP_fisher), firstSigNodes = 5, useInfo = "none")
+
+printGraph(topGO_lowcu_BP, lowcu_BP_fisher, firstSigNodes = 5, fn.prefix = here::here("Output/tGO_BP_lCu"), useInfo = "none", pdfSW = TRUE)
+
+```
+
+```{r}
+
+pdf_convert(here::here("Output/tGO_BP_lCu_weight01_5_none.pdf"), page = 1, filenames = here::here("Output/lCuBP_nodes.png"))
+
+```
+
+### Least inhibited - Zn
+
+# Create factor object showing which genes are of interest
+
+```{r}
+
+low25_zn_list <- factor(as.integer(all_ens$Ensembl_Gene_ID %in% bottom25_zn$Ensembl_Gene_ID))
+
+names(low25_zn_list) <- all_ens$Ensembl_Gene_ID
+
+```
+
+# Build topGO data object
+
+```{r}
+
+topGO_lowzn_BP <- new(Class = "topGOdata", ontology = "BP", allGenes = low25_zn_list, annot = annFUN.gene2GO, gene2GO = kin2GO)
+
+```
+
+```{r}
+
+graph(topGO_lowzn_BP)
+
+```
+
+```{r}
+
+lowzn_sg_BP <- sigGenes(topGO_lowzn_BP)
+
+str(lowzn_sg_BP)
+
+```
+
+```{r}
+
+numSigGenes(topGO_lowzn_BP)
+
+```
+
+# Run Fisher's exact test
+
+```{r}
+
+lowzn_BP_fisher <- runTest(topGO_lowzn_BP, algorithm = "weight01", statistic = "fisher")
+
+```
+
+```{r}
+
+lowzn_BP_res <- GenTable(topGO_lowzn_BP, weightFisher = lowzn_BP_fisher, orderBy = "lowzn_BP_fisher", ranksOf = "weightFisher", topNodes = 10)
+
+```
+
+```{r}
+
+lowzn_BP_res
+
+```
+
+# Plot data
+
+```{r}
+
+showSigOfNodes(topGO_lowzn_BP, score(lowzn_BP_fisher), firstSigNodes = 5, useInfo = "none")
+
+printGraph(topGO_lowzn_BP, lowzn_BP_fisher, firstSigNodes = 5, fn.prefix = here::here("Output/tGO_BP_lZn"), useInfo = "none", pdfSW = TRUE)
+
+```
+
+```{r}
+
+pdf_convert(here::here("Output/tGO_BP_lZn_weight01_5_none.pdf"), page = 1, filenames = here::here("Output/lZnBP_nodes.png"))
+
+```
+
+Analysis 3.3: Enrichment of activated kinases - Cu and Zn
+
+### Activated - Cu
+
+# Create factor object showing which genes are of interest
+
+```{r}
+
+activ_cu_list <- factor(as.integer(all_ens$Ensembl_Gene_ID %in% activ_cu$Ensembl_Gene_ID))
+
+names(activ_cu_list) <- all_ens$Ensembl_Gene_ID
+
+```
+
+# Build topGO data object
+
+```{r}
+
+topGO_activcu_BP <- new(Class = "topGOdata", ontology = "BP", allGenes = activ_cu_list, annot = annFUN.gene2GO, gene2GO = kin2GO)
+
+```
+
+```{r}
+
+graph(topGO_activcu_BP)
+
+```
+
+```{r}
+
+activcu_sg_BP <- sigGenes(topGO_activcu_BP)
+
+str(activcu_sg_BP)
+
+```
+
+```{r}
+
+numSigGenes(topGO_activcu_BP)
+
+```
+
+# Run Fisher's exact test
+
+```{r}
+
+activcu_BP_fisher <- runTest(topGO_activcu_BP, algorithm = "weight01", statistic = "fisher")
+
+```
+
+```{r}
+
+activcu_BP_res <- GenTable(topGO_activcu_BP, weightFisher = activcu_BP_fisher, orderBy = "activcu_BP_fisher", ranksOf = "weightFisher", topNodes = 10)
+
+```
+
+```{r}
+
+activcu_BP_res
+
+```
+
+# Plot data
+
+```{r}
+
+showSigOfNodes(topGO_activcu_BP, score(activcu_BP_fisher), firstSigNodes = 5, useInfo = "none")
+
+printGraph(topGO_activcu_BP, activcu_BP_fisher, firstSigNodes = 5, fn.prefix = here::here("Output/tGO_BP_aCu"), useInfo = "none", pdfSW = TRUE)
+
+```
+
+```{r}
+
+pdf_convert(here::here("Output/tGO_BP_aCu_weight01_5_none.pdf"), page = 1, filenames = here::here("Output/aCuBP_nodes.png"))
+
+```
+
+### Activated - Zn
+
+# Create factor object showing which genes are of interest
+
+```{r}
+
+activ_zn_list <- factor(as.integer(all_ens$Ensembl_Gene_ID %in% activ_zn$Ensembl_Gene_ID))
+
+names(activ_zn_list) <- all_ens$Ensembl_Gene_ID
+
+```
+
+# Build topGO data object
+
+```{r}
+
+topGO_activzn_BP <- new(Class = "topGOdata", ontology = "BP", allGenes = activ_zn_list, annot = annFUN.gene2GO, gene2GO = kin2GO)
+
+```
+
+```{r}
+
+graph(topGO_activzn_BP)
+
+```
+
+```{r}
+
+activzn_sg_BP <- sigGenes(topGO_activzn_BP)
+
+str(activzn_sg_BP)
+
+```
+
+```{r}
+
+numSigGenes(topGO_activzn_BP)
+
+```
+
+# Run Fisher's exact test
+
+```{r}
+
+activzn_BP_fisher <- runTest(topGO_activzn_BP, algorithm = "weight01", statistic = "fisher")
+
+```
+
+```{r}
+
+activzn_BP_res <- GenTable(topGO_activzn_BP, weightFisher = activzn_BP_fisher, orderBy = "activzn_BPfisher", ranksOf = "weightFisher", topNodes = 20)
+
+```
+
+```{r}
+
+activzn_BP_res
+
+```
+
+# Plot data
+
+```{r}
+
+showSigOfNodes(topGO_activzn_BP, score(activzn_BP_fisher), firstSigNodes = 5, useInfo = "none")
+
+printGraph(topGO_activzn_BP, activzn_BP_fisher, firstSigNodes = 5, fn.prefix = here::here("Output/tGO_BP_aZn"), useInfo = "none", pdfSW = TRUE)
+
+```
+
+```{r}
+
+pdf_convert(here::here("Output/tGO_BP_aZn_weight01_5_none.pdf"), page = 1, filenames = here::here("Output/aZnBP_nodes.png"))
+
+```
+
+### Plot GO terms by compound and ontology
+
+# All inhibited
+
+# Most inhibited - MF
+
+```{r}
+
+allinh_MF_res_sig <- allinh_MF_res_2 %>% 
+  dplyr::filter(Annotated > 5) %>% 
+  slice_min(weightFisher, n = 10) %>% 
+  mutate(Ontology = "MF")
+
+allinh_BP_res_sig <- allinh_BP_res_2 %>% 
+  dplyr::filter(Annotated > 5) %>%
+  slice_min(weightFisher, n = 10) %>% 
+  mutate(Ontology = "BP")
+
+                          
+```
+
+```{r}
+
+allinh_data <- rbind(allinh_MF_res_sig, allinh_BP_res_sig)
+
+allinh_data$weightFisher <- as.numeric(as.character(allinh_data$weightFisher))
+
+allinh_trans <- allinh_data %>% 
+  mutate(weightFisher_trans = -log(weightFisher, base = 10))
+
+```
+
+```{r}
+
+facet.labs <- c("Biological Process", "Molecular Function")
+names(facet.labs) <- c("BP", "MF")
+
+(allinh_plot <- allinh_trans %>% 
+  ggplot(aes(x = reorder(paste(GO.ID, Term), -weightFisher_trans), y = weightFisher_trans, fill = Ontology)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  theme_bw() +
+  theme(axis.text.x = element_text(size = 10, colour = "black", angle = 270, hjust = 0)) +
+  theme(axis.text.y = element_text(size = 10, colour = "black")) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+  facet_grid(.~Ontology, scale = "free_x", labeller = labeller(Ontology = facet.labs)) +
+  theme(legend.position = "none") +
+  theme(axis.title.x = element_blank()) +
+  ylab("Significance of term to enrichment (-log10(p-value)") +
+  theme(axis.title.y = element_text(size = 12, colour = "black")))
+
+ggsave(here::here("Output/allinh_plot.png"), width = 20, height = 20, units = "cm")
+
+```
+
+# Most inhibited - MF
+
+```{r}
+
+topcu_MF_res_sig <- topcu_MF_res %>% 
+  dplyr::filter(Annotated > 5) %>% 
+  mutate(Ontology = "MF", Compound = "Cu")
+
+topcu_BP_res_sig <- topcu_BP_res %>% 
+  dplyr::filter(Annotated > 5) %>%
+  mutate(Ontology = "BP", Compound = "Cu")
+
+topzn_BP_res_sig <- topzn_BP_res %>% 
+  dplyr::filter(Annotated > 5) %>%
+  mutate(Ontology = "BP", Compound = "Zn")
+
+topzn_MF_res_sig <- topzn_MF_res %>%
+  dplyr::filter(Annotated > 5) %>%
+  mutate(Ontology = "MF", Compound = "Zn")
+                          
+```
+
+```{r}
+
+mostinh_data <- rbind(topcu_BP_res_sig, topcu_MF_res_sig, topzn_BP_res_sig, topzn_MF_res_sig)
+
+mostinh_data$weightFisher <- as.numeric(as.character(mostinh_data$weightFisher))
+
+mostinh_trans <- mostinh_data %>% 
+  mutate(weightFisher_trans = -log(weightFisher, base = 10))
+
+```
+
+```{r}
+
+facet.labs <- c("Biological Process", "Molecular Function")
+names(facet.labs) <- c("BP", "MF")
+
+(mostinh_plot <- mostinh_trans %>% 
+  ggplot(aes(x = reorder(paste(GO.ID, Term), -weightFisher_trans), y = weightFisher_trans, fill = Compound)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  theme_bw() +
+  theme(axis.text.x = element_text(size = 10, colour = "black", angle = 270, hjust = 0)) +
+  theme(axis.text.y = element_text(size = 10, colour = "black")) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank()) +
+  facet_grid(.~Ontology, scale = "free_x", labeller = labeller(Ontology = facet.labs)) +
+  scale_fill_discrete(name = "Compound", labels = c("Copper", "Zinc")) +
+  theme(axis.title.x = element_blank()) +
+  ylab("Significance of term to enrichment (-log10(p-value)") +
+  theme(axis.title.y = element_text(size = 12, colour = "black")))
+
+ggsave(here::here("Output/mostinh_plot.png"), width = 20, height = 20, units = "cm")
+
+```
+
+### Extract genes in top 3 GO terms by inhibition type
+
+Code for this section was adapted from: [https://datacatz.wordpress.com/2018/01/19/gene-set-enrichment-analysis-with-topgo-part-1/]
+
+# MI Cu MF
+
+```{r}
+
+myterms_topcu_MF <- topcu_MF_res_sig$GO.ID 
+mygenes_topcu_MF <- genesInTerm(topGO_topcu_MF, myterms_topcu_MF)
+ 
+var <- c()
+for (i in 1:length(myterms_topcu_MF))
+{
+myterm_topcu_MF <- myterms_topcu_MF[i]
+mygenesforterm_topcu_MF <- mygenes_topcu_MF[myterm_topcu_MF][[1]]
+mygenesforterm_topcu_MF <- paste(mygenesforterm_topcu_MF, collapse = ',')
+var[i] <- paste(myterm_topcu_MF, mygenesforterm_topcu_MF)
+topcu_MF_genes <- data.frame(var)
+topcu_MF_genes <- separate(topcu_MF_genes, var, sep = " ", into = c("GO.ID", "Ensembl_Gene_ID"))
+}
+
+topcu_MF_genes <- topcu_MF_genes %>% 
+  cSplit(., 'Ensembl_Gene_ID', ',') 
+
+topcu_MF_genes <- topcu_MF_genes %>% 
+  pivot_longer(-GO.ID, names_to = "count", values_to = "Ensembl_Gene_ID") %>% 
+  dplyr::select(-count) %>% 
+  dplyr::filter(Ensembl_Gene_ID %in% top25_cu$Ensembl_Gene_ID) %>% 
+  mutate(inhibition_status = "Most") %>% 
+  mutate(ontology = "MF")
+
+```
+
+# Add HGNC names and GO terms for each gene
+
+```{r}
+
+topcu_MF_genes <- inh_kinase_cu %>% 
+  dplyr::select(hgnc_name, Ensembl_Gene_ID) %>% 
+  right_join(., topcu_MF_genes, by = "Ensembl_Gene_ID") %>% 
+  arrange(GO.ID)
+
+``` 
+
+```{r}
+
+topcu_MF_genes_tidy <- right_join(topcu_MF_genes, topcu_MF_res_sig, by = "GO.ID") %>% 
+  dplyr::select("hgnc_name", "Ensembl_Gene_ID", "GO.ID", "Term", "Compound", "inhibition_status", "Ontology")
+
+```
+
+```{r}
+
+write.csv(topcu_MF_genes, here::here("Output/genetoGOmapping_topcuMF.csv"), quote = F)
+
+```
+
+# MI Zn MF
+
+```{r}
+
+myterms_topzn_MF <- topzn_MF_res_sig$GO.ID 
+mygenes_topzn_MF <- genesInTerm(topGO_topzn_MF, myterms_topzn_MF)
+ 
+var <- c()
+for (i in 1:length(myterms_topzn_MF))
+{
+myterm_topzn_MF <- myterms_topzn_MF[i]
+mygenesforterm_topzn_MF <- mygenes_topzn_MF[myterm_topzn_MF][[1]]
+mygenesforterm_topzn_MF <- paste(mygenesforterm_topzn_MF, collapse = ',')
+var[i] <- paste(myterm_topzn_MF, mygenesforterm_topzn_MF)
+topzn_MF_genes <- data.frame(var)
+topzn_MF_genes <- separate(topzn_MF_genes, var, sep = " ", into = c("GO.ID", "Ensembl_Gene_ID"))
+}
+
+topzn_MF_genes <- topzn_MF_genes %>% 
+  cSplit(., 'Ensembl_Gene_ID', ',') 
+
+topzn_MF_genes <- topzn_MF_genes %>% 
+  pivot_longer(-GO.ID, names_to = "count", values_to = "Ensembl_Gene_ID") %>% 
+  dplyr::select(-count) %>% 
+  dplyr::filter(Ensembl_Gene_ID %in% top25_zn$Ensembl_Gene_ID) %>% 
+  mutate(inhibition_status = "Most") %>% 
+  mutate(ontology = "MF")
+
+```
+
+# Add HGNC names and GO terms for each gene
+
+```{r}
+
+topzn_MF_genes <- inh_kinase_zn %>% 
+  dplyr::select(hgnc_name, Ensembl_Gene_ID) %>% 
+  right_join(., topzn_MF_genes, by = "Ensembl_Gene_ID") %>% 
+  arrange(GO.ID)
+
+``` 
+
+```{r}
+
+topzn_MF_genes_tidy <- right_join(topzn_MF_genes, topzn_MF_res_sig, by = "GO.ID") %>% 
+  dplyr::select("hgnc_name", "Ensembl_Gene_ID", "GO.ID", "Term", "Compound", "inhibition_status", "Ontology")
+
+```
+
+```{r}
+
+write.csv(topzn_MF_genes, here::here("Output/genetoGOmapping_topznMF.csv"), quote = F)
+
+```
+
+# Activ Cu MF
+
+```{r}
+
+activcu_MF_res_sig <- activcu_MF_res %>% 
+  dplyr::filter(Annotated > 5) %>% 
+  mutate(Ontology = "MF")
+
+```
+
+```{r}
+
+myterms_activcu_MF <- activcu_MF_res_sig$GO.ID 
+mygenes_activcu_MF <- genesInTerm(topGO_activcu_MF, myterms_activcu_MF)
+ 
+var <- c()
+for (i in 1:length(myterms_activcu_MF))
+{
+myterm_activcu_MF <- myterms_activcu_MF[i]
+mygenesforterm_activcu_MF <- mygenes_activcu_MF[myterm_activcu_MF][[1]]
+mygenesforterm_activcu_MF <- paste(mygenesforterm_activcu_MF, collapse = ',')
+var[i] <- paste(myterm_activcu_MF, mygenesforterm_activcu_MF)
+activcu_MF_genes <- data.frame(var)
+activcu_MF_genes <- separate(activcu_MF_genes, var, sep = " ", into = c("GO.ID", "Ensembl_Gene_ID"))
+}
+
+activcu_MF_genes <- activcu_MF_genes %>% 
+  cSplit(., 'Ensembl_Gene_ID', ',') 
+
+activcu_MF_genes <- activcu_MF_genes %>% 
+  pivot_longer(-GO.ID, names_to = "count", values_to = "Ensembl_Gene_ID") %>% 
+  dplyr::select(-count) %>% 
+  dplyr::filter(Ensembl_Gene_ID %in% activ_cu$Ensembl_Gene_ID) %>% 
+  mutate(Compound = "Cu") %>% 
+  mutate(inhibition_status = "Active") %>% 
+  mutate(ontology = "MF")
+
+```
+
+# Add HGNC names and GO terms for each gene
+
+```{r}
+
+activcu_MF_genes <- inh_kinase_cu %>% 
+  dplyr::select(hgnc_name, Ensembl_Gene_ID) %>% 
+  right_join(., activcu_MF_genes, by = "Ensembl_Gene_ID") %>% 
+  arrange(GO.ID)
+
+``` 
+
+```{r}
+
+activcu_MF_genes_tidy <- right_join(activcu_MF_genes, activcu_MF_res_sig, by = "GO.ID") %>% 
+  dplyr::select("hgnc_name", "Ensembl_Gene_ID", "GO.ID", "Term", "Compound", "inhibition_status", "Ontology")
+
+```
+
+```{r}
+
+write.csv(activcu_MF_genes, here::here("Output/genetoGOmapping_activcuMF.csv"), quote = F)
+
+```
+
+# Activ Zn MF
+
+```{r}
+
+activzn_MF_res_sig <- activzn_MF_res %>% 
+  dplyr::filter(Annotated > 5) %>% 
+  mutate(Ontology = "MF")
+
+```
+
+```{r}
+
+myterms_activzn_MF <- activzn_MF_res_sig$GO.ID 
+mygenes_activzn_MF <- genesInTerm(topGO_activzn_MF, myterms_activzn_MF)
+ 
+var <- c()
+for (i in 1:length(myterms_activzn_MF))
+{
+myterm_activzn_MF <- myterms_activzn_MF[i]
+mygenesforterm_activzn_MF <- mygenes_activzn_MF[myterm_activzn_MF][[1]]
+mygenesforterm_activzn_MF <- paste(mygenesforterm_activzn_MF, collapse=',')
+var[i] <- paste(myterm_activzn_MF, mygenesforterm_activzn_MF)
+activzn_MF_genes <- data.frame(var)
+activzn_MF_genes <- separate(activzn_MF_genes, var, sep = " ", into = c("GO.ID", "Ensembl_Gene_ID"))
+}
+
+activzn_MF_genes <- activzn_MF_genes %>% 
+  cSplit(., 'Ensembl_Gene_ID', ',') 
+
+activzn_MF_genes <- activzn_MF_genes %>% 
+  pivot_longer(-GO.ID, names_to = "count", values_to = "Ensembl_Gene_ID") %>% 
+  dplyr::select(-count) %>% 
+  dplyr::filter(Ensembl_Gene_ID %in% activ_zn$Ensembl_Gene_ID) %>% 
+  mutate(Compound = "Zn") %>% 
+  mutate(inhibition_status = "Active") %>% 
+  mutate(ontology = "MF")
+
+```
+
+# Add HGNC names and GO terms for each gene
+
+```{r}
+
+activzn_MF_genes <- inh_kinase_zn %>% 
+  dplyr::select(hgnc_name, Ensembl_Gene_ID) %>% 
+  right_join(., activzn_MF_genes, by = "Ensembl_Gene_ID") %>% 
+  arrange(GO.ID)
+
+``` 
+
+```{r}
+
+activzn_MF_genes_tidy <- right_join(activzn_MF_genes, activzn_MF_res_sig, by = "GO.ID") %>% 
+  dplyr::select("hgnc_name", "Ensembl_Gene_ID", "GO.ID", "Term", "Compound", "inhibition_status", "Ontology")
+
+```
+
+```{r}
+
+write.csv(activzn_MF_genes, here::here("Output/genetoGOmapping_activznMF.csv"), quote = F)
+
+```
+
+# MI Cu BP
+
+```{r}
+
+myterms_topcu_BP <- topcu_BP_res_sig$GO.ID 
+mygenes_topcu_BP <- genesInTerm(topGO_topcu_BP, myterms_topcu_BP)
+ 
+var <- c()
+for (i in 1:length(myterms_topcu_BP))
+{
+myterm_topcu_BP <- myterms_topcu_BP[i]
+mygenesforterm_topcu_BP <- mygenes_topcu_BP[myterm_topcu_BP][[1]]
+mygenesforterm_topcu_BP <- paste(mygenesforterm_topcu_BP, collapse=',')
+var[i] <- paste(myterm_topcu_BP, mygenesforterm_topcu_BP)
+topcu_BP_genes <- data.frame(var)
+topcu_BP_genes <- separate(topcu_BP_genes, var, sep = " ", into = c("GO.ID", "Ensembl_Gene_ID"))
+}
+
+topcu_BP_genes <- topcu_BP_genes %>% 
+  cSplit(., 'Ensembl_Gene_ID', ',') 
+
+topcu_BP_genes <- topcu_BP_genes %>% 
+  pivot_longer(-GO.ID, names_to = "count", values_to = "Ensembl_Gene_ID") %>% 
+  dplyr::select(-count) %>% 
+  dplyr::filter(Ensembl_Gene_ID %in% top25_cu$Ensembl_Gene_ID) %>% 
+  mutate(inhibition_status = "Most") %>% 
+  mutate(ontology = "BP")
+
+```
+
+# Add HGNC names and GO terms for each gene
+
+```{r}
+
+topcu_BP_genes <- inh_kinase_cu %>% 
+  dplyr::select(hgnc_name, Ensembl_Gene_ID) %>% 
+  right_join(., topcu_BP_genes, by = "Ensembl_Gene_ID") %>% 
+  arrange(GO.ID)
+
+``` 
+
+```{r}
+
+topcu_BP_genes_tidy <- right_join(topcu_BP_genes, topcu_BP_res_sig, by = "GO.ID") %>% 
+  dplyr::select("hgnc_name", "Ensembl_Gene_ID", "GO.ID", "Term", "Compound", "inhibition_status", "Ontology")
+
+```
+
+```{r}
+
+write.csv(topcu_BP_genes, here::here("Output/genetoGOmapping_topcuBP.csv"), quote = F)
+
+```
+
+
+# MI Zn BP
+
+```{r}
+
+myterms_topzn_BP <- topzn_BP_res_sig$GO.ID 
+mygenes_topzn_BP <- genesInTerm(topGO_topzn_BP, myterms_topzn_BP)
+ 
+var <- c()
+for (i in 1:length(myterms_topzn_BP))
+{
+myterm_topzn_BP <- myterms_topzn_BP[i]
+mygenesforterm_topzn_BP <- mygenes_topzn_BP[myterm_topzn_BP][[1]]
+mygenesforterm_topzn_BP <- paste(mygenesforterm_topzn_BP, collapse=',')
+var[i] <- paste(myterm_topzn_BP, mygenesforterm_topzn_BP)
+topzn_BP_genes <- data.frame(var)
+topzn_BP_genes <- separate(topzn_BP_genes, var, sep = " ", into = c("GO.ID", "Ensembl_Gene_ID"))
+}
+
+topzn_BP_genes <- topzn_BP_genes %>% 
+  cSplit(., 'Ensembl_Gene_ID', ',') 
+
+topzn_BP_genes <- topzn_BP_genes %>% 
+  pivot_longer(-GO.ID, names_to = "count", values_to = "Ensembl_Gene_ID") %>% 
+  dplyr::select(-count) %>% 
+  dplyr::filter(Ensembl_Gene_ID %in% top25_zn$Ensembl_Gene_ID) %>% 
+  mutate(inhibition_status = "Most") %>% 
+  mutate(ontology = "BP")
+
+```
+
+# Add HGNC names and GO terms for each gene
+
+```{r}
+
+topzn_BP_genes <- inh_kinase_zn %>% 
+  dplyr::select(hgnc_name, Ensembl_Gene_ID) %>% 
+  right_join(., topzn_BP_genes, by = "Ensembl_Gene_ID") %>% 
+  arrange(GO.ID)
+
+``` 
+
+```{r}
+
+topzn_BP_genes_tidy <- right_join(topzn_BP_genes, topzn_BP_res_sig, by = "GO.ID") %>% 
+  dplyr::select("hgnc_name", "Ensembl_Gene_ID", "GO.ID", "Term", "Compound", "inhibition_status", "Ontology")
+
+```
+
+```{r}
+
+write.csv(topzn_BP_genes, here::here("Output/genetoGOmapping_topznBP.csv"), quote = F)
+
+```
